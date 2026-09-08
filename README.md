@@ -369,7 +369,7 @@ the full design.
 ## Building from source
 
 ```bash
-git clone https://github.com/kd9taw/Nexus.git nexus
+git clone https://github.com/pbranly/Nexus.git nexus
 cd nexus
 cargo test --workspace                  # Rust core (NOTE: this excludes src-tauri)
 cargo test --manifest-path src-tauri/Cargo.toml --lib --features radio
