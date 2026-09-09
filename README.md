@@ -376,6 +376,7 @@ cargo test --workspace                  # Rust core (NOTE: this excludes src-tau
 cargo test --manifest-path src-tauri/Cargo.toml --lib --features radio
 cd ui && npm install && npm test        # UI suites (vitest)
 # Windows installer, cross-compiled from Linux/WSL2:
+cd ..
 ./scripts/build-windows-cross.sh
 # Linux .deb + AppImage:
 ./scripts/build-linux.sh
