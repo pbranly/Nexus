@@ -74,6 +74,7 @@ import {
   updateRadioProfile,
   type RadioProfilePatch,
   testCat,
+  testSdrconnect,
   probeCatPorts,
   qrzTestConnection,
   syncQrz,
@@ -4128,6 +4129,7 @@ export function SettingsPanel({
                 >
                   <option value="serial">{t('settings.rigControl.conn.serial')}</option>
                   <option value="network">{t('settings.rigControl.conn.network')}</option>
+                  <option value="sdrconnect">{t('settings.rigControl.conn.sdrconnect')}</option>
                   {/* Offered on every platform and DISABLED off Windows, rather than hidden:
                       OmniRig is named in the docs and in half the Windows logging ecosystem, so
                       a mac/Linux operator who goes looking for it must find the answer here
@@ -4239,11 +4241,72 @@ export function SettingsPanel({
                 </label>
               )}
 
+              {form.rigConn === 'sdrconnect' && (
+                <>
+                  <label className="settings-field">
+                    <span className="settings-label">{t('settings.rigControl.sdrconnect.address.label')}</span>
+                    <input
+                      className="settings-input"
+                      type="text"
+                      value={form.rigAddr}
+                      placeholder="ws://192.168.1.50:5454"
+                      onChange={(e) => update('rigAddr', e.target.value)}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <span className="settings-hint">
+                      {t('settings.rigControl.sdrconnect.address.hint')}
+                    </span>
+                  </label>
+                  <div className="settings-cat-test">
+                    <button
+                      type="button"
+                      className="settings-testcat"
+                      onClick={async () => {
+                        if (!form.rigAddr.trim()) {
+                          setCatResult({
+                            ok: false,
+                            detail: t('settings.rigControl.sdrconnect.address.required'),
+                          })
+                          return
+                        }
+                        setCatTesting(true)
+                        setCatResult(null)
+                        try {
+                          await persistRadioForm(form)
+                          onSaved?.()
+                          setCatResult(await testSdrconnect(form.rigAddr.trim()))
+                        } catch {
+                          setCatResult({
+                            ok: false,
+                            detail: t('settings.rigControl.sdrconnect.test.failed'),
+                          })
+                        } finally {
+                          setCatTesting(false)
+                        }
+                      }}
+                      disabled={catTesting}
+                      title={t('settings.rigControl.sdrconnect.test.title')}
+                    >
+                      {catTesting
+                        ? t('settings.rigControl.sdrconnect.test.testing')
+                        : t('settings.rigControl.sdrconnect.test.action')}
+                    </button>
+                    {catResult?.detail ? (
+                      <span className={`cat-result ${catResult.ok ? 'ok' : 'fail'}`} role="status">
+                        {catResult.ok ? '✓ ' : '✗ '}
+                        {catResult.detail}
+                      </span>
+                    ) : null}
+                  </div>
+                </>
+              )}
+
               {/* Serial Port + Baud belong to whoever OPENS the port. With Network that is
                   rigctld over TCP; with OmniRig it is OmniRig itself, which owns the rig type,
                   the port and the baud — so asking for them here would be asking the operator
                   to configure the same radio twice and get it wrong once. */}
-              {form.rigConn !== 'network' && form.rigConn !== 'omnirig' && (
+              {form.rigConn !== 'network' && form.rigConn !== 'sdrconnect' && form.rigConn !== 'omnirig' && (
                 <>
               <label className="settings-field">
                 <span className="settings-label">{t('settings.rigControl.serialPort.label')}</span>

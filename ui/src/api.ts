@@ -1749,6 +1749,11 @@ export async function testCat(): Promise<CatTestResult> {
   return invoke<CatTestResult>('test_cat')
 }
 
+/** Test the direct SDRconnect WebSocket endpoint configured in the active radio form. */
+export async function testSdrconnect(address: string): Promise<CatTestResult> {
+  return invoke<CatTestResult>('test_sdrconnect', { address })
+}
+
 /** Auto-test which serial port drives the rig: probes each USB port read-only and
  * returns the working (port, baud, model) to auto-select, or found=false. */
 export async function probeCatPorts(radioId?: number): Promise<CatProbeResult> {

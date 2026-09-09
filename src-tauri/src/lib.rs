@@ -11108,6 +11108,102 @@ fn cat_test_timeout(detail: String, audio_error: Option<String>) -> CatTestResul
 /// (hold/ack handshake), the same port is probed at the other plausible rates, and the
 /// verdict says exactly which side to fix.
 ///
+/// Test a direct SDRconnect WebSocket endpoint.
+///
+/// This is deliberately independent from rigctld: SDRconnect exposes its own
+/// WebSocket control API, so the endpoint is the exact `ws://host:port` entered
+/// by the operator in the radio profile.
+#[tauri::command]
+async fn test_sdrconnect(address: String) -> Result<CatTestResult, String> {
+    let address = address.trim().to_owned();
+    if address.is_empty() {
+        return Err("SDRconnect WebSocket address is empty".to_owned());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        use tungstenite::{connect, Message};
+
+        let (mut socket, _) = connect(&address)
+            .map_err(|e| format!("Connexion WebSocket impossible: {e}"))?;
+
+        let request = serde_json::json!({
+            "event_type": "get_property",
+            "property": "device_vfo_frequency",
+            "value": ""
+        });
+
+        socket
+            .send(Message::Text(request.to_string().into()))
+            .map_err(|e| format!("Envoi vers SDRconnect impossible: {e}"))?;
+
+        loop {
+            match socket
+                .read()
+                .map_err(|e| format!("Lecture SDRconnect impossible: {e}"))?
+            {
+                Message::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text)
+                        .map_err(|e| format!("Réponse SDRconnect invalide: {e}"))?;
+
+                    let event_type = value
+                        .get("event_type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let property = value
+                        .get("property")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+
+                    if event_type == "get_property_response"
+                        && property == "device_vfo_frequency"
+                    {
+                        let frequency = value
+                            .get("value")
+                            .map(|v| {
+                                v.as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| v.to_string())
+                            })
+                            .unwrap_or_default();
+
+                        return Ok(CatTestResult {
+                            ok: true,
+                            detail: format!("SDRconnect connecté — VFO {frequency} Hz"),
+                        });
+                    }
+
+                    if event_type == "error" {
+                        let detail = value
+                            .get("value")
+                            .map(|v| {
+                                v.as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| v.to_string())
+                            })
+                            .unwrap_or_else(|| "SDRconnect a refusé la requête".to_owned());
+                        return Ok(CatTestResult { ok: false, detail });
+                    }
+                }
+                Message::Ping(payload) => {
+                    socket
+                        .send(Message::Pong(payload))
+                        .map_err(|e| format!("Réponse WebSocket impossible: {e}"))?;
+                }
+                Message::Close(_) => {
+                    return Ok(CatTestResult {
+                        ok: false,
+                        detail: "SDRconnect a fermé la connexion".to_owned(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("Test SDRconnect interrompu: {e}"))?
+    .map_err(|e| e)
+}
+
 /// ⏱ **This is the ONLY place a ladder runs, and that is deliberate.** Picking a rig
 /// imposes nothing and waits for nothing — the transcribed per-model rate rows that used
 /// to do that were deleted for being wrong (2026-08-06). The operator pays a sweep only
@@ -22066,6 +22162,7 @@ fn build_app(d: BuildDeps) -> tauri::Result<tauri::App> {
             atu_tune,
             halt_tx,
             test_cat,
+            test_sdrconnect,
             set_tx_even,
             set_tx_cycle_auto,
             set_beacon,
