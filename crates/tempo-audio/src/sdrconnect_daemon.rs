@@ -54,6 +54,7 @@ fn sdr_demod_to_rigctld(demod: &str) -> &'static str {
 
 /// The `RigBackend` this daemon serves: every rigctld verb Nexus's own `Rig` client sends,
 /// translated to a call on `crate::sdrconnect::SdrConnect`.
+#[derive(Debug)]
 struct SdrConnectBackend {
     client: SdrConnect,
     /// Cleared on any WebSocket failure, set again on the next success. `health()`/`is_alive()`
@@ -133,6 +134,7 @@ impl RigBackend for SdrConnectBackend {
 }
 
 /// The daemon itself — see the module doc for the contract.
+#[derive(Debug)]
 pub struct SdrConnectDaemon {
     stop: Arc<AtomicBool>,
     tcp_thread: Option<std::thread::JoinHandle<()>>,
