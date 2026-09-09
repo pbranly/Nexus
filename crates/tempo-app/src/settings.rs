@@ -269,6 +269,26 @@ pub fn rig_conn_is_omnirig(rig_conn: &str) -> bool {
     rig_conn.eq_ignore_ascii_case("omnirig")
 }
 
+/// Is this rig driven through **SDRconnect** — SDRplay's WebSocket control API
+/// (e.g. an RSP1B) — instead of by a rigctld Nexus launches?
+///
+/// ⭐ THE SINGLE SOURCE OF TRUTH for that question, for the same reason
+/// [`rig_conn_is_network`] and [`rig_conn_is_omnirig`] are:
+/// `tempo_audio::service::Transport::is_sdrconnect` calls THIS, so the
+/// daemon-choice seam and every settings-side consumer cannot answer
+/// differently.
+///
+/// Like OmniRig this needs no second field to gate on beyond the connection
+/// tag itself: the WebSocket endpoint lives in `rig_addr` (a `ws://host:port`
+/// URL, not a Hamlib `host:port` pair), and an empty address is caught where
+/// the daemon actually dials out, not here — mirroring how `rig_conn_is_network`
+/// treats a missing address as "not this transport" would wrongly report a
+/// freshly-picked-but-not-yet-filled-in SDRconnect radio as serial. Case
+/// insensitive for the same hand-edited-config reason as OmniRig.
+pub fn rig_conn_is_sdrconnect(rig_conn: &str) -> bool {
+    rig_conn.eq_ignore_ascii_case("sdrconnect")
+}
+
 /// Could Nexus's OWN CI-V daemon ever serve a radio wired like this — i.e. is
 /// "turn on Native CI-V" a cure that EXISTS for it?
 ///
@@ -288,6 +308,9 @@ pub fn native_civ_reachable(rig_model: u32, rig_conn: &str, rig_addr: &str) -> b
         // to speak CI-V itself. Without this the satellite offer would pre-fill a Main/Sub
         // mapping whose write has no path at all.
         && !rig_conn_is_omnirig(rig_conn)
+        // Same dead end a fourth way: SDRconnect drives the RSP1B over its own WebSocket,
+        // never through a serial CI-V port Nexus could open.
+        && !rig_conn_is_sdrconnect(rig_conn)
 }
 
 impl Settings {

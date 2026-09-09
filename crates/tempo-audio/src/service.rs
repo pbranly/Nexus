@@ -48,6 +48,12 @@ enum CatDaemon {
     /// (`crate::omnirig`). A third thing that can listen on the radio's rigctld port, exactly
     /// like `Native` — everything downstream stays agnostic.
     Omni(crate::omnirig::OmniDaemon),
+    /// The SDRconnect shim: the same rigctld protocol, served over SDRplay's SDRconnect
+    /// WebSocket API instead of a serial port (`crate::sdrconnect_daemon`). A fourth thing
+    /// that can listen on the radio's rigctld port, exactly like `Native` and `Omni` —
+    /// everything downstream stays agnostic. Phase 1: frequency, mode and filter width only;
+    /// no IQ/audio/spectrum streaming.
+    Sdr(crate::sdrconnect_daemon::SdrConnectDaemon),
 }
 
 impl CatDaemon {
@@ -56,20 +62,28 @@ impl CatDaemon {
             CatDaemon::Spawned(p) => p.is_alive(),
             CatDaemon::Native(d) => d.is_alive(),
             CatDaemon::Omni(d) => d.is_alive(),
+            CatDaemon::Sdr(d) => d.is_alive(),
         }
     }
     /// The native daemon, when that's what this is (scope drain / enable).
     fn native(&self) -> Option<&crate::civ::broker::CivDaemon> {
         match self {
             CatDaemon::Native(d) => Some(d),
-            CatDaemon::Spawned(_) | CatDaemon::Omni(_) => None,
+            CatDaemon::Spawned(_) | CatDaemon::Omni(_) | CatDaemon::Sdr(_) => None,
         }
     }
     /// The OmniRig shim, when that's what this is — for the status detail and TX intent.
     fn omni(&self) -> Option<&crate::omnirig::OmniDaemon> {
         match self {
             CatDaemon::Omni(d) => Some(d),
-            CatDaemon::Native(_) | CatDaemon::Spawned(_) => None,
+            CatDaemon::Native(_) | CatDaemon::Spawned(_) | CatDaemon::Sdr(_) => None,
+        }
+    }
+    /// The SDRconnect shim, when that's what this is — for the status detail.
+    fn sdr(&self) -> Option<&crate::sdrconnect_daemon::SdrConnectDaemon> {
+        match self {
+            CatDaemon::Sdr(d) => Some(d),
+            CatDaemon::Native(_) | CatDaemon::Spawned(_) | CatDaemon::Omni(_) => None,
         }
     }
 }
@@ -92,10 +106,11 @@ fn safe_rigctld_port(port: u16) -> u16 {
 /// The CI-V address to natively drive `t` at — `Some` only when the operator opted this
 /// radio into `icom_native_cat` AND it's a scope-capable Icom on a serial connection.
 fn native_civ_addr(t: &Transport) -> Option<u8> {
-    // OmniRig joins `is_network()` as a transport the CI-V daemon can never serve: OmniRig
-    // holds the COM port, so Nexus cannot open it to speak CI-V. Mirrored in tempo-app's
+    // OmniRig and SDRconnect join `is_network()` as transports the CI-V daemon can never
+    // serve: OmniRig holds the COM port and SDRconnect holds the RSP1B over its own
+    // WebSocket, so Nexus cannot open either as a serial CI-V port. Mirrored in tempo-app's
     // `native_civ_reachable`, which is what tells the operator the cure does not exist here.
-    if !t.icom_native_cat || t.is_network() || t.is_omnirig() || t.rig_model == 0 {
+    if !t.icom_native_cat || t.is_network() || t.is_omnirig() || t.is_sdrconnect() || t.rig_model == 0 {
         return None;
     }
     crate::rigmodels::icom_scope_model(t.rig_model).map(|m| m.default_civ_addr())
@@ -128,6 +143,10 @@ fn keys_on_the_cat_port(t: &Transport) -> bool {
         // through a daemon that does not exist would be a rig that tunes and never keys.
         // `open_serial_ptt` has the matching branch; the two must stay in step (see the ⚠️).
         && !t.is_omnirig()
+        // SDRconnect is excluded for the same reason: there is no rigctld and no serial
+        // port of ours to share an fd on — SDRconnect drives the RSP1B directly, and any
+        // RTS/DTR keying line stays independent hardware Nexus asserts itself.
+        && !t.is_sdrconnect()
         && !t.serial_port.trim().is_empty()
         && t.ptt_port().eq_ignore_ascii_case(t.serial_port.trim())
 }
@@ -164,6 +183,15 @@ fn spawn_cat_daemon(
     if t.is_omnirig() {
         return crate::omnirig::OmniDaemon::start(t.omnirig_slot(), t.rigctld_port)
             .map(|d| (CatDaemon::Omni(d), None));
+    }
+    // SDRconnect: no rigctld, no serial port of ours. Nexus starts its own shim on the
+    // radio's rigctld port and translates to/from SDRconnect's WebSocket API. Checked
+    // right after OmniRig, for the same reason: it decides the whole backend, and a
+    // network/serial fallthrough here would launch a Hamlib daemon pointed at an address
+    // that is a `ws://` URL, not a Hamlib `host:port`.
+    if t.is_sdrconnect() {
+        return crate::sdrconnect_daemon::SdrConnectDaemon::start(&t.rig_addr, t.rigctld_port)
+            .map(|d| (CatDaemon::Sdr(d), None));
     }
     #[cfg_attr(not(feature = "serial"), allow(unused_mut))] // only mutated on the serial path
     let mut native_fallback: Option<String> = None;
@@ -10436,6 +10464,7 @@ impl Transport {
     fn log_subject(&self) -> String {
         let via = match self.rig_conn.as_str() {
             "network" if !self.rig_addr.is_empty() => format!(" via {}", self.rig_addr),
+            "sdrconnect" if !self.rig_addr.is_empty() => format!(" via SDRconnect {}", self.rig_addr),
             "omnirig" => format!(" via OmniRig RIG {}", self.omnirig_slot.max(1)),
             _ if !self.serial_port.is_empty() => {
                 format!(" on {} @ {} baud", self.serial_port, self.baud)
@@ -10694,15 +10723,26 @@ impl Transport {
         crate::omnirig::RigSlot::from_setting(self.omnirig_slot)
     }
 
+    /// Is CAT for this radio served by **SDRconnect** — SDRplay's WebSocket control API
+    /// (e.g. an RSP1B) — instead of by a rigctld Nexus launches? The rule lives in tempo-app
+    /// ([`tempo_app::settings::rig_conn_is_sdrconnect`]) for the same reason [`Self::is_network`]
+    /// and [`Self::is_omnirig`] do: one source of truth, shared by the daemon-choice seam here
+    /// and by anything in Settings that needs the same answer.
+    fn is_sdrconnect(&self) -> bool {
+        tempo_app::settings::rig_conn_is_sdrconnect(&self.rig_conn)
+    }
+
     /// Is there a CAT control channel to open at all?
     ///
     /// A Hamlib rig needs a MODEL NUMBER — without one there is nothing to launch rigctld
     /// with. An OmniRig radio does not: the rig type lives inside OmniRig, along with its COM
     /// port and baud, so Nexus's own model field is meaningless there. Demanding one would
     /// make the operator configure the same radio twice and get it wrong once — and the
-    /// symptom would be a rig with no CAT and nothing saying why.
+    /// symptom would be a rig with no CAT and nothing saying why. SDRconnect is the same
+    /// shape a third way: the RSP1B's "model" is SDRconnect's own device selection, not a
+    /// Hamlib number, so `rig_model` stays 0 for it too.
     fn cat_available(&self) -> bool {
-        self.rig_model != 0 || self.is_omnirig()
+        self.rig_model != 0 || self.is_omnirig() || self.is_sdrconnect()
     }
 
     /// Does this transport need the LONG (2.5 s) CAT command deadline because the SERIAL
@@ -11381,7 +11421,10 @@ fn open_cat(
     // already on this port is not our shim, so attaching to it would drive whatever radio
     // THAT daemon serves while the operator believes they are on OmniRig. We must own the
     // listener. If the port is genuinely taken, the bind below fails and says so.
-    let allow_coexist = allow_coexist && !t.is_omnirig();
+    // SDRconnect never coexists either, for the same reason OmniRig does not: a rigctld
+    // already on this port is not our shim, so attaching to it would drive whatever radio
+    // THAT daemon serves while the operator believes SDRconnect is driving the RSP1B.
+    let allow_coexist = allow_coexist && !t.is_omnirig() && !t.is_sdrconnect();
     let listening = if allow_coexist {
         crate::rigctld_server::probe_cat_port(&addr, Duration::from_millis(400))
     } else {
@@ -11445,8 +11488,11 @@ fn open_cat(
             std::thread::sleep(Duration::from_millis(700));
             let mut rig = Rig::with_control(Some(addr), ptt_mode);
             rig.set_slow_transport(
-                network || native_civ_addr(t).is_some() || t.is_slow_serial_link(),
-            ); // network chains + the native daemon + slow serial links (Xiegu / vintage Kenwood / any rig ≤ 19200 baud) get the long deadline
+                network
+                    || t.is_sdrconnect() // a WebSocket hop, same long-deadline case as network
+                    || native_civ_addr(t).is_some()
+                    || t.is_slow_serial_link(),
+            ); // network chains + SDRconnect + the native daemon + slow serial links (Xiegu / vintage Kenwood / any rig ≤ 19200 baud) get the long deadline
             let mut probe = finish_cat_open(&mut rig, t);
             // Say WHICH backend this result came from — a native-CI-V radio silently
             // falling back to rigctld otherwise reads as "native was tested and failed".
@@ -11455,9 +11501,10 @@ fn open_cat(
             let native_wanted = native_civ_addr(t).is_some() && ptt_line.is_none();
             probe.detail = with_backend(
                 probe.detail,
-                match proc.omni() {
-                    Some(d) => omnirig_backend_label(d.slot()),
-                    None => {
+                match (proc.omni(), proc.sdr()) {
+                    (Some(d), _) => omnirig_backend_label(d.slot()),
+                    (None, Some(_)) => "SDRconnect",
+                    (None, None) => {
                         cat_backend_label(native_wanted, Some(matches!(proc, CatDaemon::Native(_))))
                     }
                 },
@@ -11480,6 +11527,11 @@ fn open_cat(
                             probe.detail = format!("{} {e}", probe.detail);
                         }
                     }
+                    CatDaemon::Sdr(d) => {
+                        if let Err(e) = d.health() {
+                            probe.detail = format!("{} {e}", probe.detail);
+                        }
+                    }
                     CatDaemon::Native(_) => {}
                 }
             }
@@ -11489,6 +11541,11 @@ fn open_cat(
             Rig::vox(),
             None,
             CatProbe::status(Some(false), omnirig_start_failed(t, &e)),
+        ),
+        Err(e) if t.is_sdrconnect() => (
+            Rig::vox(),
+            None,
+            CatProbe::status(Some(false), sdrconnect_start_failed(t, &e)),
         ),
         Err(e) => (
             Rig::vox(),
@@ -11521,6 +11578,30 @@ fn omnirig_start_failed(t: &Transport, e: &std::io::Error) -> String {
         );
     }
     format!("Nexus could not start its OmniRig link: {e}")
+}
+
+/// Explain an SDRconnect shim that would not START. Two causes are ours: the TCP port the
+/// shim has to bind for the rest of Nexus was taken, or the WebSocket dial to SDRconnect
+/// itself never connected (SDRconnect not running, wrong address, wrong port, or a firewall).
+fn sdrconnect_start_failed(t: &Transport, e: &std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::AddrInUse {
+        return format!(
+            "Nexus could not start its SDRconnect link: something is already using TCP port {} \
+             on this PC. Give this radio a different rigctld TCP Port (Settings ▸ Radio ▸ \
+             Advanced), or close whatever holds that one.",
+            t.rigctld_port
+        );
+    }
+    if t.rig_addr.trim().is_empty() {
+        return "Nexus could not start its SDRconnect link: no WebSocket address is set for \
+                this radio (Settings ▸ Radio, e.g. ws://192.168.1.50:5454)."
+            .to_owned();
+    }
+    format!(
+        "Nexus could not start its SDRconnect link: {e}. Is SDRconnect running and reachable \
+         at {}?",
+        t.rig_addr
+    )
 }
 
 /// Explain a `rigctld` that would not START — as opposed to one that started and could not
