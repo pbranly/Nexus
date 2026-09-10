@@ -7,56 +7,46 @@
 //! band-follow, QSY-on-click) never learns the difference — it is a fourth `CatDaemon` variant,
 //! same as `Native` and `Omni`.
 //!
-//! Phase 1 only: frequency, demodulator mode and filter bandwidth. No PTT (the RSP1B is a
-//! receive-only SDR) and no IQ/audio/spectrum streaming — `crate::sdrconnect::SdrConnect`
-//! deliberately does not enable those either yet.
+//! # Option B: Nexus demodulates, SDRconnect just tunes
+//!
+//! Earlier phases (frequency + mode control only) drove SDRconnect's OWN `demodulator`/
+//! `filter_bandwidth` properties and its message-type-1 pre-demodulated audio. That was
+//! rejected in favour of a receiver Nexus fully owns: this daemon now uses
+//! `device_center_frequency` (the hardware LO, not `device_vfo_frequency`) for CAT frequency
+//! control, and every rigctld `M`/`m` mode command reaches [`crate::sdrconnect_dsp::DemodParams`]
+//! instead of SDRconnect's demod — a SECOND WebSocket connection
+//! ([`crate::sdrconnect_iq::SdrConnectIq`], owned by this daemon) streams raw IQ and
+//! demodulates it locally. SDRconnect's own `demodulator`/`filter_bandwidth` properties are
+//! never written by this file any more; whatever SDRconnect's own GUI shows for them is now
+//! informational only, not the signal path.
+//!
+//! One consequence worth stating plainly: **CAT frequency control now retunes the hardware**,
+//! not a VFO offset within an already-captured span (see `sdrconnect_dsp`'s module doc for why
+//! that simplification was chosen). A frequency write is a few milliseconds slower than the old
+//! `device_vfo_frequency` write was, and the IQ worker's filters see a brief discontinuity right
+//! after — inaudible in practice, but real.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::rigctld_server::{serve_until, RigBackend};
 use crate::sdrconnect::SdrConnect;
+use crate::sdrconnect_dsp::{DemodMode, DemodParams};
+use crate::sdrconnect_iq::SdrConnectIq;
 
-/// A rigctld mode word → SDRconnect's `demodulator` value.
-///
-/// SDRconnect has one CW and one AM/SAM pair and no DATA-submode distinction, so every
-/// rigctld DATA word (`PKTUSB`, `DATA-U`, ...) collapses onto plain `USB`/`LSB` — there is
-/// nothing on the SDR side for it to select differently. `None` for a word SDRconnect cannot
-/// represent, refused rather than approximated, matching `OmniMode::from_rigctld`'s rule: a
-/// silently-wrong emission is worse than a refused command.
-fn rigctld_to_sdr_demod(word: &str) -> Option<&'static str> {
-    Some(match word.trim().to_ascii_uppercase().as_str() {
-        "USB" | "PKTUSB" | "DATA-U" | "PKT-U" | "USB-D" => "USB",
-        "LSB" | "PKTLSB" | "DATA-L" | "PKT-L" | "LSB-D" => "LSB",
-        "CW" | "CW-U" | "CWU" | "CWR" | "CW-L" | "CWL" => "CW",
-        "AM" => "AM",
-        "FM" | "PKTFM" | "FM-D" | "PKT-FM" => "NFM",
-        "WFM" => "WFM",
-        _ => return None,
-    })
-}
-
-/// SDRconnect's `demodulator` value → the rigctld mode word Nexus (and any Hamlib client)
-/// reads back. `SAM` reports as plain `AM` — rigctld has no synchronous-AM word — and any
-/// unrecognised value reports as `USB` rather than an empty string, the same "never blank"
-/// rule `OmniMode::mode` follows when OmniRig has not reported yet.
-fn sdr_demod_to_rigctld(demod: &str) -> &'static str {
-    match demod.trim().to_ascii_uppercase().as_str() {
-        "USB" => "USB",
-        "LSB" => "LSB",
-        "CW" => "CW",
-        "AM" | "SAM" => "AM",
-        "NFM" => "FM",
-        "WFM" => "WFM",
-        _ => "USB",
-    }
-}
+/// A sensible starting mode/bandwidth for a radio that has never received a CAT `M`/`F` command
+/// yet — general-coverage SSB listening, the most common single default across ham receivers.
+const DEFAULT_MODE: DemodMode = DemodMode::Usb;
+const DEFAULT_BANDWIDTH_HZ: u32 = 2_700;
 
 /// The `RigBackend` this daemon serves: every rigctld verb Nexus's own `Rig` client sends,
-/// translated to a call on `crate::sdrconnect::SdrConnect`.
+/// translated to a call on `crate::sdrconnect::SdrConnect` (frequency) or a write to the shared
+/// [`DemodParams`] (mode/bandwidth — read by the IQ worker, never sent to SDRconnect itself; see
+/// the module doc).
 #[derive(Debug)]
 struct SdrConnectBackend {
     client: SdrConnect,
+    demod: Arc<DemodParams>,
     /// Cleared on any WebSocket failure, set again on the next success. `health()`/`is_alive()`
     /// read this rather than re-probing — a failed `get_property` already paid its own 5 s
     /// timeout once; asking again on every health check would pay it a second time.
@@ -73,8 +63,9 @@ impl RigBackend for SdrConnectBackend {
     fn freq_hz(&self) -> u64 {
         // 0 = "no honest reading", the same answer every other backend gives a dead link —
         // `Rig::read_freq` rejects 0, so a failure surfaces as a CAT error instead of a green
-        // pill reading 0.000 MHz.
-        match self.client.vfo_frequency_hz() {
+        // pill reading 0.000 MHz. `center_frequency_hz`, not `vfo_frequency_hz` — see the
+        // module doc: this daemon now tunes the hardware LO, not a VFO offset.
+        match self.client.center_frequency_hz() {
             Ok(hz) => {
                 self.note(true);
                 hz
@@ -87,17 +78,9 @@ impl RigBackend for SdrConnectBackend {
     }
 
     fn mode(&self) -> (String, u32) {
-        let demod = self.client.demodulator();
-        self.note(demod.is_ok());
-        let mode = demod
-            .as_deref()
-            .map(sdr_demod_to_rigctld)
-            .unwrap_or("USB")
-            .to_string();
-        // Filter bandwidth is read best-effort: a stale/unknown passband must not turn an
-        // otherwise-good mode read into a failure Nexus reports as "no CAT".
-        let passband_hz = self.client.filter_bandwidth_hz().unwrap_or(0);
-        (mode, passband_hz)
+        // Nexus's own demod state, not SDRconnect's `demodulator` property — see the module
+        // doc. This never fails (it is a local atomic read), so it never touches `healthy`.
+        (self.demod.mode().to_rigctld().to_string(), self.demod.bandwidth_hz())
     }
 
     fn ptt(&self) -> bool {
@@ -106,22 +89,25 @@ impl RigBackend for SdrConnectBackend {
     }
 
     fn set_freq(&self, hz: u64) -> bool {
-        let ok = self.client.set_vfo_frequency_hz(hz).is_ok();
+        let ok = self.client.set_center_frequency_hz(hz).is_ok();
         self.note(ok);
         ok
     }
 
     fn set_mode(&self, mode: &str, passband_hz: u32) -> bool {
-        // An unmappable mode word is REFUSED, never approximated — see `rigctld_to_sdr_demod`.
-        let Some(demod) = rigctld_to_sdr_demod(mode) else {
+        // An unmappable mode word is REFUSED, never approximated — see `DemodMode::from_rigctld`.
+        let Some(demod_mode) = DemodMode::from_rigctld(mode) else {
             return false;
         };
-        let mut ok = self.client.set_demodulator(demod).is_ok();
-        if ok && passband_hz > 0 {
-            ok = self.client.set_filter_bandwidth_hz(passband_hz).is_ok();
+        self.demod.set_mode(demod_mode);
+        if passband_hz > 0 {
+            self.demod.set_bandwidth_hz(passband_hz);
         }
-        self.note(ok);
-        ok
+        // A local write cannot fail the way a WebSocket round-trip can, but it is still real
+        // work the IQ worker depends on — leaving `note` out of this arm would make `health()`
+        // silently stop reflecting mode-write attempts entirely, not just skip a failure case.
+        self.note(true);
+        true
     }
 
     fn set_ptt(&self, on: bool) -> bool {
@@ -133,17 +119,24 @@ impl RigBackend for SdrConnectBackend {
     }
 }
 
-/// The daemon itself — see the module doc for the contract.
+/// The daemon itself — see the module doc for the contract. Owns TWO WebSocket connections to
+/// SDRconnect under one lifecycle: the CAT control socket ([`SdrConnectBackend`], via the TCP
+/// shim thread) and the IQ streaming socket ([`SdrConnectIq`]) — see `sdrconnect_iq`'s module
+/// doc for why they must be separate connections. Starting and stopping together means a CAT
+/// reconnect always gets a matching fresh IQ worker and a fresh shared [`DemodParams`], with no
+/// possibility of one outliving the other and reading stale shared state.
 #[derive(Debug)]
 pub struct SdrConnectDaemon {
     stop: Arc<AtomicBool>,
     tcp_thread: Option<std::thread::JoinHandle<()>>,
     backend: Arc<SdrConnectBackend>,
+    iq: SdrConnectIq,
 }
 
 impl SdrConnectDaemon {
-    /// Dial `url` (SDRconnect's own WebSocket endpoint, e.g. `ws://192.168.1.50:5454`) and
-    /// start serving the rigctld protocol on `127.0.0.1:<tcp_port>`.
+    /// Dial `url` (SDRconnect's own WebSocket endpoint, e.g. `ws://192.168.1.50:5454`) TWICE —
+    /// once for CAT control, once for IQ streaming — and start serving the rigctld protocol on
+    /// `127.0.0.1:<tcp_port>`.
     pub fn start(url: &str, tcp_port: u16) -> std::io::Result<SdrConnectDaemon> {
         let url = url.trim();
         if url.is_empty() {
@@ -152,11 +145,17 @@ impl SdrConnectDaemon {
                 "SDRconnect WebSocket address is empty",
             ));
         }
-        let client = SdrConnect::connect(url).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-        })?;
+        let client = SdrConnect::connect(url)
+            .map_err(std::io::Error::other)?;
+        let demod = DemodParams::new(DEFAULT_MODE, DEFAULT_BANDWIDTH_HZ);
+        // Started BEFORE the TCP shim binds: if the IQ socket can't be established (SDRconnect
+        // unreachable a second time in a row would be surprising, but a strict device/stream
+        // limit on the SDRconnect side is plausible), fail the whole daemon rather than leaving
+        // a CAT-only half-daemon that reports control success but is silently deaf.
+        let iq = SdrConnectIq::start(url, demod.clone())?;
         let backend = Arc::new(SdrConnectBackend {
             client,
+            demod,
             healthy: AtomicBool::new(true),
         });
         let listener = std::net::TcpListener::bind(("127.0.0.1", tcp_port))?;
@@ -171,27 +170,40 @@ impl SdrConnectDaemon {
             stop,
             tcp_thread: Some(tcp_thread),
             backend,
+            iq,
         })
     }
 
-    /// False once the WebSocket link has failed a call and not yet recovered.
+    /// False once EITHER the CAT control link or the IQ streaming link has failed and not yet
+    /// recovered — a CAT-only failure and an IQ-only failure both mean the radio isn't fully
+    /// working, so both must be able to turn this false.
     pub fn is_alive(&self) -> bool {
-        self.backend.healthy.load(Ordering::Relaxed)
+        self.backend.healthy.load(Ordering::Relaxed) && self.iq.is_alive()
     }
 
-    /// SDRconnect's health for this radio, as a sentence — `Ok(())` when it is answering.
+    /// SDRconnect's health for this radio, as a sentence — `Ok(())` when both links are up.
     pub fn health(&self) -> Result<(), String> {
-        if self.is_alive() {
-            Ok(())
+        if !self.backend.healthy.load(Ordering::Relaxed) {
+            Err("SDRconnect CAT control is not responding.".to_string())
+        } else if !self.iq.is_alive() {
+            Err("SDRconnect IQ streaming is not responding — reconnecting.".to_string())
         } else {
-            Err("SDRconnect is not responding.".to_string())
+            Ok(())
         }
+    }
+
+    /// Drain and return every sample the IQ worker has demodulated since the last call — 12 kHz
+    /// mono `f32`, the same pull contract `flexdax::FlexDax::take_audio()` uses. This is the one
+    /// method `service.rs`'s per-tick capture step calls.
+    pub fn take_audio(&self) -> Vec<f32> {
+        self.iq.take_audio()
     }
 }
 
 impl Drop for SdrConnectDaemon {
     fn drop(&mut self) {
-        // No TX safety unkey needed here (see `set_ptt`) — just release the port cleanly.
+        // No TX safety unkey needed here (see `set_ptt`) — just release the port cleanly. The
+        // IQ worker (`self.iq`) stops itself in its own `Drop`, dropped after this runs.
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.tcp_thread.take() {
             let _ = h.join();
@@ -204,35 +216,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rigctld_data_submodes_collapse_to_plain_sideband() {
-        assert_eq!(rigctld_to_sdr_demod("PKTUSB"), Some("USB"));
-        assert_eq!(rigctld_to_sdr_demod("PKTLSB"), Some("LSB"));
-        assert_eq!(rigctld_to_sdr_demod("DATA-U"), Some("USB"));
-        assert_eq!(rigctld_to_sdr_demod("DATA-L"), Some("LSB"));
-    }
-
-    #[test]
-    fn rigctld_fm_words_map_to_narrow_fm() {
-        assert_eq!(rigctld_to_sdr_demod("FM"), Some("NFM"));
-        assert_eq!(rigctld_to_sdr_demod("PKTFM"), Some("NFM"));
-    }
-
-    #[test]
-    fn unmappable_rigctld_mode_is_refused_not_approximated() {
-        assert_eq!(rigctld_to_sdr_demod("RTTY"), None);
-        assert_eq!(rigctld_to_sdr_demod(""), None);
-    }
-
-    #[test]
-    fn sdr_demod_reports_never_go_blank() {
-        assert_eq!(sdr_demod_to_rigctld("SAM"), "AM");
-        assert_eq!(sdr_demod_to_rigctld("bogus"), "USB");
-        assert_eq!(sdr_demod_to_rigctld("WFM"), "WFM");
-    }
-
-    #[test]
     fn empty_url_is_refused_before_dialing() {
         let err = SdrConnectDaemon::start("   ", 0).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn an_unmapped_mode_word_is_refused_not_approximated() {
+        let demod = DemodParams::new(DEFAULT_MODE, DEFAULT_BANDWIDTH_HZ);
+        // `RigBackend::set_mode` on a live backend needs a real WebSocket, so this exercises the
+        // same refusal path `SdrConnectBackend::set_mode` relies on directly.
+        assert_eq!(DemodMode::from_rigctld("RTTY"), None);
+        // A backend that never receives a mappable mode keeps reporting the constructor default.
+        assert_eq!(demod.mode().to_rigctld(), DEFAULT_MODE.to_rigctld());
     }
 }

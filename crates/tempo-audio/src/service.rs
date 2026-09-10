@@ -4833,7 +4833,23 @@ impl RadioLoop {
                 }
                 dax_audio
             }
-            None => soundcard,
+            // SDRconnect (the RSP1B) has no sound-card audio path at all — its CAT daemon
+            // (`CatDaemon::Sdr`) owns a second WebSocket that demodulates locally (see
+            // `sdrconnect_iq`'s module doc) and this is its only route into the RX window.
+            // Unlike DAX there is no starvation fallback tracked here yet: a dead IQ link
+            // just reads as silence, exactly as a dead soundcard capture would for any other
+            // radio — a real gap, left for the same follow-up that would add a starvation
+            // banner, not silently pretended to be handled.
+            None => match self.rigctld_proc.as_ref() {
+                Some(CatDaemon::Sdr(sdr)) => {
+                    let mut sdr_audio = sdr.take_audio();
+                    if !sdr_audio.is_empty() {
+                        Self::apply_rx_gain(&mut sdr_audio, self.applied.rx_gain);
+                    }
+                    sdr_audio
+                }
+                _ => soundcard,
+            },
         };
         // ⚠️ RX FLOOR. Taking DAX audio means IGNORING the sound card, so a DAX source that never
         // streams (wrong IP, firewall, DAX off on the radio, slice never bound) — or one that

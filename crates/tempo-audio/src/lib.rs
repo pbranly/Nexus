@@ -38,6 +38,8 @@ pub mod serial_keyer;
 pub mod slot;
 pub mod sdrconnect;
 pub mod sdrconnect_daemon;
+pub mod sdrconnect_dsp;
+pub mod sdrconnect_iq;
 pub mod sstv_store;
 #[cfg(feature = "device")]
 pub mod sstvrx;
