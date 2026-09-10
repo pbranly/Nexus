@@ -169,6 +169,7 @@ impl DemodMode {
 /// which reads it every block to decide whether to rebuild its channel filter). Atomics, not a
 /// `Mutex`, because the IQ worker reads this on every single processing block (potentially
 /// hundreds of times a second) and must never block on a CAT command in flight.
+#[derive(Debug)]
 pub struct DemodParams {
     mode: AtomicU8,
     bandwidth_hz: AtomicU32,
