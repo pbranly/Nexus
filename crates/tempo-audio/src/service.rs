@@ -5584,7 +5584,15 @@ impl RadioLoop {
                 } else {
                     (want.monitor_device.clone(), want.audio_out.clone())
                 };
-                let guarded = crate::monitor::monitor_would_transmit(&mon_dev, &out_dev);
+                // SDRconnect (the RSP1B) is exempt from this guard: it has no transmitter at
+                // all — `sdrconnect_daemon::SdrConnectBackend::set_ptt` always refuses a
+                // key-down — so "the chosen output is the rig's TX device" cannot be true for
+                // it in the way this guard means. Without this exemption, the common case of
+                // one PC with one set of speakers configured as both the monitor output and the
+                // (unused, meaningless for this radio) TX audio device silently muted the
+                // monitor with no obvious cause — found 2026-09 chasing exactly that report.
+                let guarded = !want.is_sdrconnect()
+                    && crate::monitor::monitor_would_transmit(&mon_dev, &out_dev);
                 let effective = want.monitor_enabled && !guarded;
                 let outcome =
                     backend.set_monitor(effective, &want.monitor_device, want.monitor_level);
