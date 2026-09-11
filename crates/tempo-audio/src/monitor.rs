@@ -328,7 +328,6 @@ mod device_monitor {
             let resampled = self.native_resampler.process(samples_12k);
             self.ring.push_slice(&resampled);
         }
-    }
 
         /// Reconfigure the monitor in place. `enabled` is the guard-resolved decision
         /// (the caller has already refused a TX-device collision). Starts, stops, or
