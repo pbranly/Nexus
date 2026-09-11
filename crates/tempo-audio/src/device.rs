@@ -1883,6 +1883,14 @@ impl AudioBackend for CpalBackend {
         }
     }
 
+    /// Overrides the no-op default: this backend HAS a monitor
+    /// (`self.monitor`), so a radio with no sound-card capture stream at all — Flex DAX,
+    /// SDRconnect — still reaches it. See [`crate::monitor::Monitor::feed_native_audio`] for
+    /// the gating and resampling this delegates to.
+    fn feed_monitor(&mut self, samples: &[f32]) {
+        self.monitor.feed_native_audio(samples);
+    }
+
     /// Set the RX capture gain (a ≥1.0 multiplier applied to captured samples on the audio
     /// thread). Live: the realtime input callback reads the atomic each block. Clamped by
     /// [`clamp_rx_gain`].

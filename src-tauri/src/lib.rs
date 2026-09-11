@@ -11931,6 +11931,23 @@ fn set_comp_level(state: State<'_, SharedEngine>, level: f32) -> Result<AppSnaps
     Ok(eng.snapshot())
 }
 
+/// Set the SDRconnect RSP1B's RF (LNA) gain, 0.0–1.0. A no-op for any other rig type — see
+/// `Engine::set_sdr_rf_gain`'s doc.
+#[tauri::command(async)]
+fn set_sdr_rf_gain(state: State<'_, SharedEngine>, level: f32) -> Result<AppSnapshot, String> {
+    let mut eng = engine_lock(&state);
+    eng.set_sdr_rf_gain(level);
+    Ok(eng.snapshot())
+}
+
+/// Set the SDRconnect RSP1B's AGC on/off. A no-op for any other rig type.
+#[tauri::command(async)]
+fn set_sdr_agc_enable(state: State<'_, SharedEngine>, enabled: bool) -> Result<AppSnapshot, String> {
+    let mut eng = engine_lock(&state);
+    eng.set_sdr_agc_enable(enabled);
+    Ok(eng.snapshot())
+}
+
 /// Set the MANUAL-NOTCH frequency in Hz (#95 — a notch you cannot place is not a notch).
 /// Clamped by the engine to the audio passband a notch can usefully sit in.
 #[tauri::command(async)]
@@ -22116,6 +22133,8 @@ fn build_app(d: BuildDeps) -> tauri::Result<tauri::App> {
             set_mic_gain,
             set_nr_level,
             set_comp_level,
+            set_sdr_rf_gain,
+            set_sdr_agc_enable,
             set_notch_freq,
             set_agc,
             set_split,

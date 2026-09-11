@@ -2842,6 +2842,11 @@ struct RadioLoop {
     /// value each rig refused — same give-up idiom as `nr_level_giveup`.
     last_comp_level: Option<f32>,
     last_notch_freq_hz: Option<f32>,
+    /// SDRconnect-only RF gain / AGC last actually accepted — same give-up idiom as
+    /// `comp_level`/`comp_level_giveup` beside it, added for the same reason: a refused level
+    /// must not be re-sent on every 20 ms tick forever.
+    last_sdr_rf_gain: Option<f32>,
+    last_sdr_agc_enable: Option<bool>,
     last_agc: Option<String>,
     /// The AGC speed this rig REFUSED, so it stops being re-sent. Hamlib carries AGC as an
     /// enum (OFF/SUPERFAST/FAST/SLOW/USER/MEDIUM/AUTO) and backends do not all implement every
@@ -2874,6 +2879,10 @@ struct RadioLoop {
     nr_level_giveup: Option<f32>,
     comp_level_giveup: Option<f32>,
     notch_freq_giveup: Option<f32>,
+    /// The SDRconnect RF gain / AGC values this rig REFUSED — see `rf_power_giveup`'s doc above
+    /// for why this exists at all; same keyed-on-value, same clear-on-handoff rule.
+    sdr_rf_gain_giveup: Option<f32>,
+    sdr_agc_enable_giveup: Option<bool>,
     /// Open WAV sink while a QSO recording is streaming live RX capture to disk (audio
     /// bridge). The loop owns the file handle so the audio never has to live in RAM.
     qso_sink: Option<crate::voice::WavSink>,
@@ -3346,6 +3355,8 @@ impl RadioLoop {
             last_nr_level: None,
             last_comp_level: None,
             last_notch_freq_hz: None,
+            last_sdr_rf_gain: None,
+            last_sdr_agc_enable: None,
             last_agc: None,
             agc_giveup: None,
             rf_power_giveup: None,
@@ -3353,6 +3364,8 @@ impl RadioLoop {
             nr_level_giveup: None,
             comp_level_giveup: None,
             notch_freq_giveup: None,
+            sdr_rf_gain_giveup: None,
+            sdr_agc_enable_giveup: None,
             qso_sink: None,
             qso_started_ms: None,
             voice_mic_open: false,
@@ -4732,6 +4745,8 @@ impl RadioLoop {
         self.last_nr_level = None;
         self.last_comp_level = None;
         self.last_notch_freq_hz = None;
+        self.last_sdr_rf_gain = None;
+        self.last_sdr_agc_enable = None;
         self.last_agc = None;
         self.agc_giveup = None; // a fresh rig may well take the step the old one refused
         self.rf_power_giveup = None; // …and so may it take the level this one refused
@@ -4739,6 +4754,8 @@ impl RadioLoop {
         self.nr_level_giveup = None;
         self.comp_level_giveup = None;
         self.notch_freq_giveup = None;
+        self.sdr_rf_gain_giveup = None; // …down to the two SDRconnect-only levels
+        self.sdr_agc_enable_giveup = None;
         self.fake_it_restore = None;
         self.audio_rig_split = false;
         self.rig_split_restore = None; // the OLD radio's split is not the new one's to restore
@@ -4830,6 +4847,12 @@ impl RadioLoop {
                     // passes through — so it was inert here and a quiet Flex slice could not be
                     // boosted at all. Applied on the way in, with the card's own clamp.
                     Self::apply_rx_gain(&mut dax_audio, self.applied.rx_gain);
+                    // The headphone monitor has NO producer of its own for this route — its ring
+                    // is only ever filled by the sound-card capture callback (`device.rs`), which
+                    // native DAX audio never passes through either. Found missing entirely during
+                    // the SDRconnect IQ integration (2026-09); fixed for both routes at once here
+                    // rather than only for the one that prompted it.
+                    backend.feed_monitor(&dax_audio);
                 }
                 dax_audio
             }
@@ -4845,6 +4868,8 @@ impl RadioLoop {
                     let mut sdr_audio = sdr.take_audio();
                     if !sdr_audio.is_empty() {
                         Self::apply_rx_gain(&mut sdr_audio, self.applied.rx_gain);
+                        // Same monitor gap as DAX above, same fix — see that arm's comment.
+                        backend.feed_monitor(&sdr_audio);
                     }
                     sdr_audio
                 }
@@ -8410,13 +8435,15 @@ impl RadioLoop {
                 }
             }
             // RX DSP levels: NR level (0..1) + AGC speed — applied on change like mic gain.
-            let (nr, agc, comp, notchf) = {
+            let (nr, agc, comp, notchf, sdr_rf_gain, sdr_agc) = {
                 let mut e = engine_lock(engine);
                 (
                     e.nr_level(),
                     e.agc_to_command(),
                     e.comp_level(),
                     e.notch_freq_hz(),
+                    e.sdr_rf_gain(),
+                    e.sdr_agc_enable(),
                 )
             };
             // #95's two writes. Same shape as NR below — a refusal is remembered against THAT
@@ -8430,6 +8457,35 @@ impl RadioLoop {
                             self.comp_level_giveup = None;
                         }
                         Err(_) => self.comp_level_giveup = Some(c),
+                    }
+                }
+            }
+            // SDRconnect-only: the RSP1B's RF (LNA) gain and AGC — see `Engine::sdr_rf_gain`'s
+            // doc for why these are gated on `is_sdrconnect()` rather than sent to every rig the
+            // way COMP/NR are: "RF"/"AGC" as Hamlib LEVEL tokens could mean something else
+            // entirely to a real Hamlib backend, so this must never reach one.
+            if self.applied.is_sdrconnect() {
+                if let Some(g) = sdr_rf_gain {
+                    if Some(g) != self.last_sdr_rf_gain && self.sdr_rf_gain_giveup != Some(g) {
+                        match rig.set_rx_level("RF", g) {
+                            Ok(()) => {
+                                self.last_sdr_rf_gain = Some(g);
+                                self.sdr_rf_gain_giveup = None;
+                            }
+                            Err(_) => self.sdr_rf_gain_giveup = Some(g),
+                        }
+                    }
+                }
+                if let Some(on) = sdr_agc {
+                    if Some(on) != self.last_sdr_agc_enable && self.sdr_agc_enable_giveup != Some(on)
+                    {
+                        match rig.set_agc(if on { 1 } else { 0 }) {
+                            Ok(()) => {
+                                self.last_sdr_agc_enable = Some(on);
+                                self.sdr_agc_enable_giveup = None;
+                            }
+                            Err(_) => self.sdr_agc_enable_giveup = Some(on),
+                        }
                     }
                 }
             }

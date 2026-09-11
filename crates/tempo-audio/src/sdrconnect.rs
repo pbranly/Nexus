@@ -40,6 +40,7 @@ pub mod property {
     pub const LNA_STATE: &str = "lna_state";
     pub const LNA_STATE_MIN: &str = "lna_state_min";
     pub const LNA_STATE_MAX: &str = "lna_state_max";
+    pub const AGC_ENABLE: &str = "agc_enable";
     pub const FILTER_BANDWIDTH: &str = "filter_bandwidth";
     pub const DEMODULATOR: &str = "demodulator";
     pub const STARTED: &str = "started";
@@ -342,6 +343,28 @@ impl SdrConnect {
 
     pub fn lna_state(&self) -> Result<i32, SdrConnectError> {
         self.get_i32(property::LNA_STATE)
+    }
+
+    /// The RF gain steps THIS device actually has — read once at connect time, not assumed:
+    /// the RSP1B, RSPdx and RSPduo do not all have the same number of LNA states, and a UI
+    /// slider built on a wrong range would let the operator ask for a step the device refuses.
+    pub fn lna_state_min(&self) -> Result<i32, SdrConnectError> {
+        self.get_i32(property::LNA_STATE_MIN)
+    }
+
+    pub fn lna_state_max(&self) -> Result<i32, SdrConnectError> {
+        self.get_i32(property::LNA_STATE_MAX)
+    }
+
+    /// SDRconnect's AGC. There is no manual IF gain in this API at all (see
+    /// `sdrconnect_daemon`'s `level`/`set_level` mapping for "IF" for why AGC on/off is the
+    /// closest available substitute) — this toggles the ONE knob that exists.
+    pub fn set_agc_enable(&self, on: bool) -> Result<(), SdrConnectError> {
+        self.set_property(property::AGC_ENABLE, if on { "true" } else { "false" })
+    }
+
+    pub fn agc_enable(&self) -> Result<bool, SdrConnectError> {
+        self.get_bool(property::AGC_ENABLE)
     }
 
     pub fn set_filter_bandwidth_hz(&self, hz: u32) -> Result<(), SdrConnectError> {

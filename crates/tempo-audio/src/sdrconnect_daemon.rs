@@ -38,6 +38,35 @@ use crate::sdrconnect_iq::SdrConnectIq;
 /// yet — general-coverage SSB listening, the most common single default across ham receivers.
 const DEFAULT_MODE: DemodMode = DemodMode::Usb;
 const DEFAULT_BANDWIDTH_HZ: u32 = 2_700;
+/// Fallback LNA-state range used ONLY if querying `lna_state_min`/`lna_state_max` fails at
+/// connect time (should not happen — they are read-only, always-answerable properties — but a
+/// wrong guess here would silently misdirect every `L RF` command, so it is logged, not silent).
+/// 0..=9 matches the RSP1B's ten LNA states; a different SDRplay model with a different count
+/// would just get a clamped, off-by-a-few-steps range until the read succeeds on reconnect.
+const FALLBACK_LNA_MIN: i32 = 0;
+const FALLBACK_LNA_MAX: i32 = 9;
+
+/// SDRplay's `lna_state` (0 = most gain, least attenuation) → Hamlib's `RF` level convention
+/// (1.0 = most gain) — a pure function so the inversion/rounding is tested without a live
+/// WebSocket. See [`rf_frac_to_lna_state`] for the inverse.
+fn lna_state_to_rf_frac(state: i32, lna_min: i32, lna_max: i32) -> f64 {
+    let span = lna_max - lna_min;
+    if span <= 0 {
+        return 1.0;
+    }
+    (1.0 - (state - lna_min) as f64 / span as f64).clamp(0.0, 1.0)
+}
+
+/// The inverse of [`lna_state_to_rf_frac`]: a Hamlib `RF` fraction (0.0–1.0, 1.0 = most gain) →
+/// the nearest real `lna_state` step (an index, not a continuous value — hence the rounding).
+fn rf_frac_to_lna_state(frac: f64, lna_min: i32, lna_max: i32) -> i32 {
+    let span = lna_max - lna_min;
+    if span <= 0 {
+        return lna_min;
+    }
+    let frac = frac.clamp(0.0, 1.0);
+    lna_min + ((1.0 - frac) * span as f64).round() as i32
+}
 
 /// The `RigBackend` this daemon serves: every rigctld verb Nexus's own `Rig` client sends,
 /// translated to a call on `crate::sdrconnect::SdrConnect` (frequency) or a write to the shared
@@ -47,6 +76,12 @@ const DEFAULT_BANDWIDTH_HZ: u32 = 2_700;
 struct SdrConnectBackend {
     client: SdrConnect,
     demod: Arc<DemodParams>,
+    /// The device's own reported LNA-state range, read once at connect (see
+    /// [`FALLBACK_LNA_MIN`]/`_MAX` for what happens if that read fails). Needed on every `L RF`/
+    /// `l RF` call to convert Hamlib's normalised 0.0–1.0 gain fraction to/from SDRconnect's
+    /// integer step index — see `level`/`set_level` for the direction of that conversion.
+    lna_min: i32,
+    lna_max: i32,
     /// Cleared on any WebSocket failure, set again on the next success. `health()`/`is_alive()`
     /// read this rather than re-probing — a failed `get_property` already paid its own 5 s
     /// timeout once; asking again on every health check would pay it a second time.
@@ -117,6 +152,54 @@ impl RigBackend for SdrConnectBackend {
         // fail-safe (`serve_connection`) must never see an unkey attempt fail.
         !on
     }
+
+    /// `l RF` / `l AGC` — the two knobs SDRconnect's API actually exposes (see the module doc
+    /// on `sdrconnect.rs::set_agc_enable`'s doc for why there is no manual IF gain to add a
+    /// third for). Any other Hamlib level token (STRENGTH, SQL, ...) is `None` — unimplemented,
+    /// not zero, so a client asking for one knows to stop asking rather than act on a fake 0.
+    fn level(&self, name: &str) -> Option<String> {
+        match name {
+            "RF" => {
+                let state = self.client.lna_state().ok()?;
+                let frac = lna_state_to_rf_frac(state, self.lna_min, self.lna_max);
+                Some(format!("{frac:.3}"))
+            }
+            "AGC" => {
+                let on = self.client.agc_enable().ok()?;
+                // Hamlib's AGC level is a small integer (0 = off, nonzero = some AGC speed).
+                // SDRconnect only has on/off, so this collapses onto the two ends of that scale
+                // rather than inventing a "fast"/"slow" the API cannot actually select.
+                Some(if on { "1".to_string() } else { "0".to_string() })
+            }
+            _ => None,
+        }
+    }
+
+    fn set_level(&self, name: &str, value: &str) -> Option<bool> {
+        match name {
+            "RF" => {
+                let frac: f64 = value.trim().parse().ok()?;
+                let state = rf_frac_to_lna_state(frac, self.lna_min, self.lna_max);
+                let ok = self.client.set_lna_state(state).is_ok();
+                self.note(ok);
+                Some(ok)
+            }
+            "AGC" => {
+                // Accept both a Hamlib-style integer level and a plain "true"/"false", since
+                // Nexus's own UI (once it has one for this) is free to send whichever reads more
+                // naturally; a rigctld client sends the former.
+                let on = value
+                    .trim()
+                    .parse::<f64>()
+                    .map(|v| v > 0.0)
+                    .unwrap_or_else(|_| value.trim().eq_ignore_ascii_case("true"));
+                let ok = self.client.set_agc_enable(on).is_ok();
+                self.note(ok);
+                Some(ok)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The daemon itself — see the module doc for the contract. Owns TWO WebSocket connections to
@@ -147,6 +230,12 @@ impl SdrConnectDaemon {
         }
         let client = SdrConnect::connect(url)
             .map_err(std::io::Error::other)?;
+        // Read the device's real LNA-state range ONCE — see `FALLBACK_LNA_MIN`/`_MAX`'s doc for
+        // why a failure here falls back rather than failing the whole daemon: `L RF` is a
+        // secondary feature, and a wrong-but-clamped range is a smaller problem than no CAT at
+        // all because a read-only property hiccuped on a freshly-opened socket.
+        let lna_min = client.lna_state_min().unwrap_or(FALLBACK_LNA_MIN);
+        let lna_max = client.lna_state_max().unwrap_or(FALLBACK_LNA_MAX);
         let demod = DemodParams::new(DEFAULT_MODE, DEFAULT_BANDWIDTH_HZ);
         // Started BEFORE the TCP shim binds: if the IQ socket can't be established (SDRconnect
         // unreachable a second time in a row would be surprising, but a strict device/stream
@@ -156,6 +245,8 @@ impl SdrConnectDaemon {
         let backend = Arc::new(SdrConnectBackend {
             client,
             demod,
+            lna_min,
+            lna_max,
             healthy: AtomicBool::new(true),
         });
         let listener = std::net::TcpListener::bind(("127.0.0.1", tcp_port))?;
@@ -229,5 +320,41 @@ mod tests {
         assert_eq!(DemodMode::from_rigctld("RTTY"), None);
         // A backend that never receives a mappable mode keeps reporting the constructor default.
         assert_eq!(demod.mode().to_rigctld(), DEFAULT_MODE.to_rigctld());
+    }
+
+    #[test]
+    fn rf_gain_direction_is_inverted_against_lna_state() {
+        // lna_state 0 (least attenuation, most gain) must read as Hamlib RF = 1.0 (most gain),
+        // and the top of the range must read as 0.0 — the whole point of the inversion.
+        assert!((lna_state_to_rf_frac(0, 0, 9) - 1.0).abs() < 1e-9);
+        assert!((lna_state_to_rf_frac(9, 0, 9) - 0.0).abs() < 1e-9);
+        assert!((lna_state_to_rf_frac(0, 3, 8) - 1.0).abs() < 1e-9, "must use the DEVICE's own range, not always 0");
+    }
+
+    #[test]
+    fn rf_gain_round_trips_through_both_conversions() {
+        for &(min, max) in &[(0, 9), (2, 8), (0, 27)] {
+            for state in min..=max {
+                let frac = lna_state_to_rf_frac(state, min, max);
+                let back = rf_frac_to_lna_state(frac, min, max);
+                assert_eq!(back, state, "range {min}..={max}, state {state} -> {frac} -> {back}");
+            }
+        }
+    }
+
+    #[test]
+    fn rf_gain_handles_a_degenerate_zero_width_range_without_panicking() {
+        // A device that reports lna_state_min == lna_state_max (or a failed read that fell back
+        // to an inconsistent pair) must not divide by zero.
+        assert_eq!(rf_frac_to_lna_state(0.5, 4, 4), 4);
+        assert!((lna_state_to_rf_frac(4, 4, 4) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rf_gain_input_is_clamped_not_rejected() {
+        // A caller sending an out-of-range fraction (a bug elsewhere, or a client that does not
+        // clamp) should not produce an out-of-range `lna_state` the device could refuse.
+        assert_eq!(rf_frac_to_lna_state(-1.0, 0, 9), 9);
+        assert_eq!(rf_frac_to_lna_state(2.0, 0, 9), 0);
     }
 }

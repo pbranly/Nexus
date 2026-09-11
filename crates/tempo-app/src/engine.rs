@@ -2414,6 +2414,16 @@ pub struct Engine {
     /// HZ, not a 0..1 fraction.
     notch_freq_hz: Option<f32>,
     rig_notch_freq_hz: Option<f32>,
+    /// SDRconnect-only (the RSP1B's `lna_state`, via `sdrconnect_daemon`'s `L RF` mapping — see
+    /// its module doc for why there is no manual IF gain to pair it with). `None` until the
+    /// operator touches the control; the radio loop then leaves whatever gain SDRconnect
+    /// already had rather than forcing a value nobody asked for. No read-back pair like
+    /// `nr_level`'s: SDRconnect's `lna_state` doesn't drift on its own the way a front-panel
+    /// knob does, so there is nothing external to reconcile against yet.
+    sdr_rf_gain: Option<f32>,
+    /// SDRconnect-only AGC on/off (`sdrconnect_daemon`'s `L AGC` mapping). Same `None`-until-
+    /// touched rule as `sdr_rf_gain`.
+    sdr_agc_enable: Option<bool>,
     /// Desired / read-back AGC time constant, one of [`Engine::AGC_SPEEDS`] (the loop maps it to the
     /// rig's value). Commanded until the poll confirms; `None` when the rig doesn't report it.
     agc: Option<String>,
@@ -4275,6 +4285,8 @@ impl Engine {
             rig_nr_level: None,
             comp_level: None,
             rig_comp_level: None,
+            sdr_rf_gain: None,
+            sdr_agc_enable: None,
             notch_freq_hz: None,
             rig_notch_freq_hz: None,
             agc: None,
@@ -7575,6 +7587,26 @@ impl Engine {
         if frac.is_finite() {
             self.rig_comp_level = Some(frac.clamp(0.0, 1.0));
         }
+    }
+
+    /// SDRconnect-only RF (LNA) gain, 0.0–1.0 — see the field's doc for why there is no
+    /// read-back pair. The radio loop applies this via `Rig::set_rx_level("RF", ...)`, which
+    /// reaches `sdrconnect_daemon::SdrConnectBackend::set_level` and nothing else for any other
+    /// rig type (a Hamlib rig that also happens to support an "RF" level would receive it too —
+    /// SET IT ONLY WHEN THE ACTIVE RIG IS SDRCONNECT is the radio loop's job, not this getter's).
+    pub fn set_sdr_rf_gain(&mut self, frac: f32) {
+        self.sdr_rf_gain = Some(frac.clamp(0.0, 1.0));
+    }
+    pub fn sdr_rf_gain(&self) -> Option<f32> {
+        self.sdr_rf_gain
+    }
+
+    /// SDRconnect-only AGC on/off — see `sdr_rf_gain`'s doc; same rule applies.
+    pub fn set_sdr_agc_enable(&mut self, on: bool) {
+        self.sdr_agc_enable = Some(on);
+    }
+    pub fn sdr_agc_enable(&self) -> Option<bool> {
+        self.sdr_agc_enable
     }
 
     /// Manual-notch frequency in HZ. Clamped to the audio passband a notch can live in: a

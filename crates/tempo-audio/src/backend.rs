@@ -50,9 +50,22 @@ pub trait AudioBackend {
     fn spectrum_tap(&self) -> Option<(std::sync::Arc<crate::monitor::SpscRing>, u32)> {
         None
     }
+    /// Feed audio from a NATIVE (non-sound-card) RX source — Flex DAX, SDRconnect's local
+    /// demodulator — into the same headphone monitor the sound-card capture path feeds, so
+    /// enabling the monitor sounds the same regardless of where the radio's audio came from.
+    /// `samples` are 12 kHz mono, matching every other `AudioBackend` audio buffer. Default
+    /// no-op — `MockBackend` and any backend with no monitor output; the real sound card
+    /// (`CpalBackend`) overrides this to resample onto the monitor ring at its own rate.
     /// Set the TX audio level (0.0–1.0) applied to played samples. No-op default
     /// for non-hardware backends (the real sound card overrides it).
     fn set_tx_level(&mut self, _level: f32) {}
+    /// Feed audio from a NATIVE (non-sound-card) RX source — Flex DAX, SDRconnect's local
+    /// demodulator — into the same headphone monitor the sound-card capture path feeds, so
+    /// enabling the monitor sounds the same regardless of where the radio's audio came from.
+    /// `samples` are 12 kHz mono, matching every other `AudioBackend` audio buffer. Default
+    /// no-op — `MockBackend` and any backend with no monitor output; the real sound card
+    /// (`CpalBackend`) overrides this to resample onto the monitor ring at its own rate.
+    fn feed_monitor(&mut self, _samples: &[f32]) {}
     /// Install (or clear with `None`) a TX-audio tee: while set, every [`AudioBackend::play`] hands
     /// the 12 kHz samples to the tee INSTEAD of the output device, so exactly one route carries an
     /// over. Used to send TX audio over Flex native DAX, WITHOUT changing the TX schedule. Default

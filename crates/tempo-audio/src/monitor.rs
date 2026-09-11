@@ -272,6 +272,13 @@ mod device_monitor {
         /// The device name `out_stream` targets ("" = system default), so a device
         /// change rebuilds only the output stream.
         active_device: String,
+        /// Upsamples NATIVE (non-sound-card) 12 kHz RX audio — Flex DAX, SDRconnect's local
+        /// demodulator (`sdrconnect_iq`) — onto `ring` at `in_rate`, the rate every consumer of
+        /// `ring` (the output callback) assumes. The sound-card capture callback in `device.rs`
+        /// pushes straight into `ring` already AT `in_rate` and never touches this — only
+        /// [`Monitor::feed_native_audio`] does, which is the ONLY route a radio with no sound-card
+        /// capture stream at all has into this monitor.
+        native_resampler: crate::capture_resample::CaptureResampler,
     }
 
     impl Monitor {
@@ -290,8 +297,38 @@ mod device_monitor {
                 in_rate,
                 out_stream: None,
                 active_device: String::new(),
+                native_resampler: crate::capture_resample::CaptureResampler::new(
+                    12_000,
+                    in_rate.max(1),
+                ),
             }
         }
+
+        /// Feed 12 kHz mono RX audio from a NATIVE source into the monitor — the same route
+        /// `RadioLoop` already pulls DAX/SDRconnect audio from via `AudioBackend::capture()`'s
+        /// `dax_src`/`rigctld_proc: CatDaemon::Sdr` branches, handed here too so the operator
+        /// hears the SAME audio the decoder does regardless of where it came from.
+        ///
+        /// Gated exactly like the sound-card capture callback gates itself
+        /// (`device.rs::build_rx_stream`'s `monitoring` flag) — duplicated rather than shared,
+        /// since the two run on different threads (this on the radio loop, that in the audio
+        /// callback) and each must read the atomics itself rather than pass a bool across.
+        ///
+        /// Found missing entirely during the SDRconnect IQ integration (2026-09): DAX audio had
+        /// the exact same gap — `spectrum_tap()`'s doc already named "DAX-only paths" as a case
+        /// with no producer for the waterfall tee either. This closes it for the monitor; the
+        /// waterfall tee is a separate, still-open gap.
+        pub fn feed_native_audio(&mut self, samples_12k: &[f32]) {
+            if samples_12k.is_empty() {
+                return;
+            }
+            if !self.enabled.load(Ordering::Relaxed) || self.tx_mute.load(Ordering::Relaxed) {
+                return;
+            }
+            let resampled = self.native_resampler.process(samples_12k);
+            self.ring.push_slice(&resampled);
+        }
+    }
 
         /// Reconfigure the monitor in place. `enabled` is the guard-resolved decision
         /// (the caller has already refused a TX-device collision). Starts, stops, or
