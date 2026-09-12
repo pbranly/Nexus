@@ -169,6 +169,7 @@ fn spawn_cat_daemon(
     target: &str,
     network: bool,
     ptt_line: Option<SerialLine>,
+    monitor_sink: Option<crate::monitor::MonitorSink>,
 ) -> std::io::Result<(CatDaemon, Option<String>)> {
     // ⚠️ The native CI-V daemon speaks Icom CI-V on the serial port itself and has NO keying
     // path — it cannot assert RTS. Taking it here would open the port, leave PTT unkeyed, and
@@ -190,8 +191,12 @@ fn spawn_cat_daemon(
     // network/serial fallthrough here would launch a Hamlib daemon pointed at an address
     // that is a `ws://` URL, not a Hamlib `host:port`.
     if t.is_sdrconnect() {
-        return crate::sdrconnect_daemon::SdrConnectDaemon::start(&t.rig_addr, t.rigctld_port)
-            .map(|d| (CatDaemon::Sdr(d), None));
+        return crate::sdrconnect_daemon::SdrConnectDaemon::start(
+            &t.rig_addr,
+            t.rigctld_port,
+            monitor_sink,
+        )
+        .map(|d| (CatDaemon::Sdr(d), None));
     }
     #[cfg_attr(not(feature = "serial"), allow(unused_mut))] // only mutated on the serial path
     let mut native_fallback: Option<String> = None;
@@ -1566,7 +1571,7 @@ pub fn run_radio(engine: Arc<Mutex<Engine>>, mut cfg: RadioConfig) -> Result<(),
     seed_line_declarations(&mut applied, engine_lock(&engine).settings());
     // Initial open: allow coexisting onto a pre-existing EXTERNAL rigctld (e.g. WSJT-X already sharing
     // the rig). Mid-session rig SWITCHES pass `allow_coexist=false` when they reuse their own port.
-    let (mut rig, rigctld_proc, init_probe) = open_rig(&applied, true);
+    let (mut rig, rigctld_proc, init_probe) = open_rig(&applied, true, None);
     // The CAT open, once, with the same detail string the UI shows. A launch that dies later
     // leaves this as the last line in the file, which is the whole point of the milestone.
     // `ok` is `None` for VOX (no control channel to be healthy or not) — that is not a failure
@@ -1736,6 +1741,13 @@ pub fn run_radio(engine: Arc<Mutex<Engine>>, mut cfg: RadioConfig) -> Result<(),
             cfg_dial_hz: cfg.dial_hz,
         };
         let now = now_unix_ms();
+        // Computed BEFORE `backend` is borrowed mutably for `state.step(...)` below — `Clone`
+        // (cheap: a few `Arc`s) rather than a reference, precisely so it does not need to borrow
+        // `backend` for the whole call. See `sdrconnect_iq`'s use of this: a NATIVE audio source
+        // pushes into it from its OWN real-time thread, bypassing this tick's cadence entirely
+        // (which shares itself with CAT polling and can stall) — the fix for choppy SDRconnect
+        // monitor audio despite a 500 ms ring.
+        let monitor_sink = backend.monitor_sink();
         let stepped = state.step(
             &engine,
             &mut backend,
@@ -1751,7 +1763,9 @@ pub fn run_radio(engine: Arc<Mutex<Engine>>, mut cfg: RadioConfig) -> Result<(),
                     b
                 })
             },
-            &mut |t: &Transport, allow_coexist: bool| open_rig(t, allow_coexist),
+            &mut |t: &Transport, allow_coexist: bool| {
+                open_rig(t, allow_coexist, monitor_sink.clone())
+            },
             &mut station,
         );
         if let Err(e) = stepped {
@@ -1870,7 +1884,7 @@ fn open_monitor(t: &Transport) -> (Rig, Option<CatDaemon>, Option<bool>) {
     // `None`: a monitor is READ-ONLY and must never be able to key. Even for a shared-port
     // keying transport, the background rig's daemon comes up WITHOUT --ptt-type, so a stray
     // keying command cannot reach a radio the operator is not focused on.
-    match spawn_cat_daemon(t, target, network, None) {
+    match spawn_cat_daemon(t, target, network, None, None) {
         Ok((mut proc, _native_fallback)) => {
             std::thread::sleep(Duration::from_millis(700));
             if !proc.is_alive() {
@@ -11333,11 +11347,17 @@ fn ptt_mode_for(t: &Transport) -> PttMode {
 /// launches the bundled `rigctld`, sets the dial/mode, and probes by reading the
 /// frequency back; for serial PTT it opens the control line; for VOX `cat_ok` is
 /// `None` (not applicable). Mirrors WSJT-X's Test CAT.
-fn open_rig(t: &Transport, allow_coexist: bool) -> RigOpen {
+///
+/// `monitor_sink`: a live [`crate::monitor::MonitorSink`] when the caller already has an open
+/// audio backend to hand one from (the production tick loop does; the very first open at
+/// startup and every background probe/test do not, and pass `None`). Only reaches SDRconnect's
+/// daemon (`sdrconnect_daemon::SdrConnectDaemon`) — see its doc for what it enables. Every other
+/// rig type ignores it entirely.
+fn open_rig(t: &Transport, allow_coexist: bool, monitor_sink: Option<crate::monitor::MonitorSink>) -> RigOpen {
     match t.ptt_method.as_str() {
         // CAT PTT: control + keying both over the CAT daemon (rigctld, the native CI-V
         // daemon, or the OmniRig shim — `cat_available` is what says one can exist).
-        "cat" if t.cat_available() => open_cat(t, PttMode::Cat, allow_coexist, None),
+        "cat" if t.cat_available() => open_cat(t, PttMode::Cat, allow_coexist, None, monitor_sink),
         "cat" => (
             Rig::vox(),
             None,
@@ -11359,7 +11379,7 @@ fn open_rig(t: &Transport, allow_coexist: bool) -> RigOpen {
         // no `M`/`F` command at all because CAT was fused to the PTT method. (Matched
         // explicitly, not via the catch-all, so a typo'd/legacy ptt_method string
         // degrades safely to pure VOX below rather than silently grabbing the port.)
-        "vox" if t.cat_available() => open_cat(t, PttMode::Vox, allow_coexist, None),
+        "vox" if t.cat_available() => open_cat(t, PttMode::Vox, allow_coexist, None, monitor_sink),
         _ => (
             Rig::vox(),
             None,
@@ -11390,6 +11410,7 @@ fn open_serial_ptt(t: &Transport, line: SerialLine, allow_coexist: bool) -> RigO
             },
             allow_coexist,
             None,
+            None, // RTS/DTR keying never applies to SDRconnect (receive-only, no PTT at all)
         );
     }
     // Single-cable interface (Digirig Mobile): keying and CAT are the SAME port, so let rigctld
@@ -11401,7 +11422,7 @@ fn open_serial_ptt(t: &Transport, line: SerialLine, allow_coexist: bool) -> RigO
         // does nothing: a rig that tunes, reports healthy, and never transmits. We must own a
         // daemon we know was told to key. If the port is genuinely held by someone else our
         // spawn fails and reports it, which is the honest outcome.
-        let (rig, daemon, probe) = open_cat(t, PttMode::Cat, false, Some(line));
+        let (rig, daemon, probe) = open_cat(t, PttMode::Cat, false, Some(line), None);
         // ⚠️ TX FLOOR. Before this change a shared-port operator keyed the line DIRECTLY and had
         // no CAT, so a wrong rig model cost them nothing they had. Now keying rides the daemon,
         // and if that daemon never came up they would lose TX as well — a strictly worse radio
@@ -11428,6 +11449,7 @@ fn open_serial_ptt(t: &Transport, line: SerialLine, allow_coexist: bool) -> RigO
             },
             allow_coexist,
             None,
+            None, // same: RTS/DTR never applies to SDRconnect
         )
     } else {
         // Pure serial keying, no CAT. After the shared-port branch above this is reached only
@@ -11470,6 +11492,7 @@ fn open_cat(
     ptt_mode: PttMode,
     allow_coexist: bool,
     ptt_line: Option<SerialLine>,
+    monitor_sink: Option<crate::monitor::MonitorSink>,
 ) -> RigOpen {
     debug_assert!(
         ptt_line.is_none() || !allow_coexist,
@@ -11562,7 +11585,7 @@ fn open_cat(
     } else {
         (t.serial_port.as_str(), false)
     };
-    match spawn_cat_daemon(t, rig_target, network, ptt_line) {
+    match spawn_cat_daemon(t, rig_target, network, ptt_line, monitor_sink) {
         Ok((proc, native_fallback)) => {
             // Give the daemon a moment to bind its TCP port before connecting.
             std::thread::sleep(Duration::from_millis(700));
@@ -20284,7 +20307,7 @@ mod tests {
         // CAT broker and the launched rigctld both on the same port → no self-connect,
         // no doomed spawn; a clear message instead. Pure (no I/O before the guard).
         let t = cat_transport(4532, Some(4532));
-        let (_rig, proc, probe) = open_rig(&t, true);
+        let (_rig, proc, probe) = open_rig(&t, true, None);
         assert!(proc.is_none());
         assert_eq!(probe.ok, Some(false));
         assert!(
@@ -20353,7 +20376,7 @@ mod tests {
             ("a serial rig", serial),
             ("the documented NET rigctl setup", documented),
         ] {
-            let (_rig, proc, probe) = open_rig(&t, true);
+            let (_rig, proc, probe) = open_rig(&t, true, None);
             let (ok, detail) = (probe.ok, probe.detail);
             assert!(
                 proc.is_none(),
@@ -20427,7 +20450,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let (_rig, proc, probe) = open_rig(&cat_transport(port, None), true);
+        let (_rig, proc, probe) = open_rig(&cat_transport(port, None), true, None);
 
         assert_eq!(
             probe.ok,
@@ -20476,7 +20499,7 @@ mod tests {
     fn a_cat_server_on_the_rigctld_port_is_named_not_shared() {
         let port = fake_thetis_cat_server();
         let t = cat_transport(port, None);
-        let (_rig, proc, probe) = open_rig(&t, true);
+        let (_rig, proc, probe) = open_rig(&t, true, None);
         let detail = probe.detail;
         assert_eq!(probe.ok, Some(false), "not a working CAT link: {detail}");
         assert!(
@@ -20618,7 +20641,7 @@ mod tests {
         let mut spawning = cat_transport(free, None);
         spawning.rig_conn = "network".into();
         spawning.rig_addr = format!("127.0.0.1:{free}");
-        let (_rig, proc, probe) = open_rig(&spawning, true);
+        let (_rig, proc, probe) = open_rig(&spawning, true, None);
         drop(squatter);
         assert!(proc.is_none(), "never spawns into its own port");
         assert_eq!(probe.ok, Some(false));
@@ -20697,7 +20720,7 @@ mod tests {
         let (port, _log) = recording_backend();
         let t = cat_transport(port, None);
         // The app's persisted dial is 20 m; the rig sits on 40 m LSB.
-        let (_rig, _proc, probe) = open_rig(&t, true);
+        let (_rig, _proc, probe) = open_rig(&t, true, None);
         assert_eq!(probe.ok, Some(true), "{}", probe.detail);
         assert_eq!(
             probe.freq_hz,
@@ -20713,7 +20736,7 @@ mod tests {
     fn launch_never_commands_the_rig() {
         let (port, log) = recording_backend();
         let t = cat_transport(port, None);
-        let (_rig, _proc, probe) = open_rig(&t, true);
+        let (_rig, _proc, probe) = open_rig(&t, true, None);
         assert_eq!(probe.ok, Some(true), "{}", probe.detail);
         let lines = log.lock().unwrap().clone();
         assert!(
@@ -20732,7 +20755,7 @@ mod tests {
         let mut t = cat_transport(0, None);
         t.ptt_method = "rts".to_string();
         t.serial_port = String::new(); // shared/empty → pure serial keying, no CAT
-        let (_rig, _proc, probe) = open_rig(&t, true);
+        let (_rig, _proc, probe) = open_rig(&t, true, None);
         assert!(
             probe.freq_hz.is_none() && probe.mode.is_none(),
             "no control channel ⇒ no read ⇒ nothing to confirm"

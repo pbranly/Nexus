@@ -66,6 +66,13 @@ pub trait AudioBackend {
     /// no-op — `MockBackend` and any backend with no monitor output; the real sound card
     /// (`CpalBackend`) overrides this to resample onto the monitor ring at its own rate.
     fn feed_monitor(&mut self, _samples: &[f32]) {}
+    /// A handle a NATIVE audio source's OWN real-time thread can push through directly — see
+    /// [`crate::monitor::MonitorSink`]'s doc for why this exists alongside `feed_monitor`
+    /// instead of replacing it. Default `None`: `MockBackend` and any backend with no monitor
+    /// at all; `CpalBackend` overrides this to return a live sink from its own `Monitor`.
+    fn monitor_sink(&self) -> Option<crate::monitor::MonitorSink> {
+        None
+    }
     /// Install (or clear with `None`) a TX-audio tee: while set, every [`AudioBackend::play`] hands
     /// the 12 kHz samples to the tee INSTEAD of the output device, so exactly one route carries an
     /// over. Used to send TX audio over Flex native DAX, WITHOUT changing the TX schedule. Default

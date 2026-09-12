@@ -232,7 +232,7 @@ impl MonoResampler {
 }
 
 #[cfg(feature = "device")]
-pub use device_monitor::Monitor;
+pub use device_monitor::{Monitor, MonitorSink};
 
 #[cfg(feature = "device")]
 mod device_monitor {
@@ -318,6 +318,13 @@ mod device_monitor {
         /// the exact same gap — `spectrum_tap()`'s doc already named "DAX-only paths" as a case
         /// with no producer for the waterfall tee either. This closes it for the monitor; the
         /// waterfall tee is a separate, still-open gap.
+        ///
+        /// **Superseded for anything latency-sensitive by [`MonitorSink`]** (see its doc): this
+        /// method is only reached through `RadioLoop`'s ~20 ms tick, which shares its cadence
+        /// with CAT polling and can stall for as long as the active rig's CAT timeout — heard as
+        /// choppy, gapped audio despite a 500 ms ring. `SdrConnectIq` uses `MonitorSink` instead,
+        /// pushing from its OWN real-time thread as each block is demodulated. This method is
+        /// kept for `flexdax::FlexDax`, which does not yet have an equivalent real-time push.
         pub fn feed_native_audio(&mut self, samples_12k: &[f32]) {
             if samples_12k.is_empty() {
                 return;
@@ -327,6 +334,21 @@ mod device_monitor {
             }
             let resampled = self.native_resampler.process(samples_12k);
             self.ring.push_slice(&resampled);
+        }
+
+        /// A cheap, `Clone`-able handle a NATIVE audio source can hold onto and push into
+        /// DIRECTLY, from ITS OWN real-time thread — see [`Monitor::feed_native_audio`]'s doc for
+        /// why that tick-driven method is not good enough for anything as latency-sensitive as
+        /// live listening. Cloning is just four `Arc`/primitive copies (no lock, no stream
+        /// handle), so obtaining a fresh one every ~20 ms tick (see
+        /// `AudioBackend::monitor_sink`) is not a concern.
+        pub fn sink(&self) -> MonitorSink {
+            MonitorSink {
+                ring: self.ring.clone(),
+                enabled: self.enabled.clone(),
+                tx_mute: self.tx_mute.clone(),
+                rate: self.in_rate,
+            }
         }
 
         /// Reconfigure the monitor in place. `enabled` is the guard-resolved decision
@@ -383,6 +405,43 @@ mod device_monitor {
             }
             self.enabled.store(true, Ordering::Release);
             Ok(())
+        }
+    }
+
+    /// A cheap, `Clone`-able handle to a `Monitor`'s ring — see
+    /// [`Monitor::sink`]/[`Monitor::feed_native_audio`]'s docs for why this exists alongside
+    /// that method rather than instead of it: this is for a NATIVE audio source's own real-time
+    /// thread (`sdrconnect_iq::SdrConnectIq`); `feed_native_audio` remains the tick-driven path
+    /// (`flexdax::FlexDax`) for sources with no such thread of their own.
+    #[derive(Clone)]
+    pub struct MonitorSink {
+        ring: Arc<SpscRing>,
+        enabled: Arc<AtomicBool>,
+        tx_mute: Arc<AtomicBool>,
+        rate: u32,
+    }
+
+    impl MonitorSink {
+        /// The rate every sample pushed through [`MonitorSink::push`] must already be at — the
+        /// SAME rate the sound-card capture callback fills this ring at, since one output stream
+        /// reads it as a single unbroken timeline. The caller resamples to this, not the other
+        /// way around: `Monitor` does not know the caller's native rate (SDRconnect's Stage 1
+        /// output, 25 kHz — see `sdrconnect_iq`), so it cannot do that conversion itself.
+        pub fn rate(&self) -> u32 {
+            self.rate
+        }
+
+        /// Push already-resampled-to-[`MonitorSink::rate`] mono `f32` samples straight into the
+        /// ring, gated exactly like [`Monitor::feed_native_audio`] (duplicated, not shared, for
+        /// the same cross-thread reason that method's doc gives).
+        pub fn push(&self, samples_at_rate: &[f32]) {
+            if samples_at_rate.is_empty() {
+                return;
+            }
+            if !self.enabled.load(Ordering::Relaxed) || self.tx_mute.load(Ordering::Relaxed) {
+                return;
+            }
+            self.ring.push_slice(samples_at_rate);
         }
     }
 

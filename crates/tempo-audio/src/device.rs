@@ -1891,6 +1891,12 @@ impl AudioBackend for CpalBackend {
         self.monitor.feed_native_audio(samples);
     }
 
+    /// Overrides the `None` default: this backend HAS a real `Monitor`
+    /// to hand a sink out of.
+    fn monitor_sink(&self) -> Option<crate::monitor::MonitorSink> {
+        Some(self.monitor.sink())
+    }
+
     /// Set the RX capture gain (a ≥1.0 multiplier applied to captured samples on the audio
     /// thread). Live: the realtime input callback reads the atomic each block. Clamped by
     /// [`clamp_rx_gain`].

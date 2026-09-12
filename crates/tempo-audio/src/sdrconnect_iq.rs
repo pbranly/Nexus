@@ -27,6 +27,21 @@
 //! CURRENT connection state, so the surrounding `SdrConnectDaemon`/CAT-probe machinery can still
 //! surface a persistent failure — the two are complementary, not redundant: a two-second blip
 //! self-heals invisibly, a genuinely dead RSP1B still shows up as CAT trouble.
+//!
+//! # Real-time monitor feed
+//!
+//! `take_audio()` alone is not good enough for LIVE LISTENING, even though it is fine for
+//! decode: it is only ever drained by `RadioLoop`'s ~20 ms tick, which shares its cadence with
+//! CAT polling — a stalled or slow CAT round-trip (plausible for SDRconnect: a network hop, not
+//! a local serial port) delays the NEXT drain by however long that stall lasted. Decode does not
+//! notice (it accumulates into a window and tolerates the jitter); a human listening does
+//! (heard as choppy, gapped audio despite `Monitor`'s own 500 ms ring, first reported and traced
+//! 2026-09). `monitor_sink` (see [`SdrConnectIq::start`]) exists to route around this: when
+//! given, this worker pushes each finished block into it from ITS OWN thread the instant that
+//! block is ready — the exact same "real-time push, not a tick-driven pull" pattern the physical
+//! sound card's own capture callback already gets for free. `take_audio()`'s tick-driven pull
+//! keeps working unchanged for decode; the two delivery paths are independent and both always
+//! active when `monitor_sink` is `Some`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -226,7 +241,16 @@ impl SdrConnectIq {
     /// the SAME `Arc<DemodParams>` the CAT shim's `SdrConnectBackend` writes on every rigctld
     /// mode/bandwidth command, so a WSJT-X `M USB 2700` reaches this worker on its very next
     /// processing block.
-    pub fn start(url: &str, demod: Arc<DemodParams>) -> std::io::Result<SdrConnectIq> {
+    ///
+    /// `monitor_sink`: when `Some`, this worker's OWN thread pushes demodulated audio straight
+    /// into it as each block finishes — see the module doc's "Real-time monitor feed" section
+    /// for why that is the point of accepting it here at all, rather than leaving the RadioLoop
+    /// tick's `take_audio()` pull to cover both decode AND live listening.
+    pub fn start(
+        url: &str,
+        demod: Arc<DemodParams>,
+        monitor_sink: Option<crate::monitor::MonitorSink>,
+    ) -> std::io::Result<SdrConnectIq> {
         let url = url.trim().to_string();
         if url.is_empty() {
             return Err(std::io::Error::new(
@@ -248,7 +272,7 @@ impl SdrConnectIq {
         let audio2 = audio.clone();
         let thread = std::thread::Builder::new()
             .name("sdrconnect-iq".into())
-            .spawn(move || Self::run(first, url, demod, stop2, healthy2, audio2))
+            .spawn(move || Self::run(first, url, demod, stop2, healthy2, audio2, monitor_sink))
             .map_err(std::io::Error::other)?;
 
         Ok(SdrConnectIq {
@@ -266,7 +290,9 @@ impl SdrConnectIq {
     }
 
     /// Drain and return every sample demodulated since the last call — 12 kHz mono `f32`, the
-    /// same contract `flexdax::FlexDax::take_audio()` uses.
+    /// same contract `flexdax::FlexDax::take_audio()` uses. Still the ONLY route into the
+    /// decoder — `monitor_sink` (see `start`) is a SEPARATE, additional delivery for live
+    /// listening, not a replacement for this pull.
     pub fn take_audio(&self) -> Vec<f32> {
         self.audio
             .lock()
@@ -281,6 +307,7 @@ impl SdrConnectIq {
         stop: Arc<AtomicBool>,
         healthy: Arc<AtomicBool>,
         audio: Arc<Mutex<Vec<f32>>>,
+        monitor_sink: Option<crate::monitor::MonitorSink>,
     ) {
         // Stage 1 is built ONCE — it never depends on mode, only on the fixed IQ/Stage-1 rates.
         let stage1_taps = design_lowpass(
@@ -292,6 +319,13 @@ impl SdrConnectIq {
         let mut current_mode = demod.mode();
         let mut current_bw = demod.bandwidth_hz();
         let mut stage2 = build_stage2(current_mode, current_bw);
+        // A SECOND resampler, 12 kHz -> whatever rate the monitor's ring expects
+        // (`MonitorSink::rate()` — the sound card's own capture rate). Kept separate from
+        // `resampler` above: decode always wants exactly 12 kHz, the monitor wants whatever the
+        // operator's audio hardware runs at, and conflating them would make either one wrong.
+        let mut monitor_resampler = monitor_sink
+            .as_ref()
+            .map(|sink| CaptureResampler::new(FINAL_RATE_HZ, sink.rate().max(1)));
 
         let mut client = Some(first);
         while !stop.load(Ordering::Relaxed) {
@@ -332,6 +366,18 @@ impl SdrConnectIq {
                     }
                     let demodulated = run_stage2(&mut stage2, &decimated);
                     let resampled = resampler.process(&demodulated);
+                    // REAL-TIME monitor push — happens HERE, on this thread, the instant a block
+                    // is ready, not on the next RadioLoop tick. This is what fixes choppy
+                    // playback: the ring gets fed at the same cadence IQ frames actually arrive
+                    // from SDRconnect, independent of whatever the CAT tick is doing right now.
+                    if let (Some(sink), Some(mon_resampler)) =
+                        (monitor_sink.as_ref(), monitor_resampler.as_mut())
+                    {
+                        if !resampled.is_empty() {
+                            let for_monitor = mon_resampler.process(&resampled);
+                            sink.push(&for_monitor);
+                        }
+                    }
                     if resampled.is_empty() {
                         continue;
                     }
@@ -412,7 +458,8 @@ mod tests {
 
     #[test]
     fn empty_url_is_refused_before_dialing() {
-        let err = SdrConnectIq::start("   ", DemodParams::new(DemodMode::Usb, 2_700)).unwrap_err();
+        let err =
+            SdrConnectIq::start("   ", DemodParams::new(DemodMode::Usb, 2_700), None).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

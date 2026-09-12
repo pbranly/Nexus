@@ -220,7 +220,21 @@ impl SdrConnectDaemon {
     /// Dial `url` (SDRconnect's own WebSocket endpoint, e.g. `ws://192.168.1.50:5454`) TWICE —
     /// once for CAT control, once for IQ streaming — and start serving the rigctld protocol on
     /// `127.0.0.1:<tcp_port>`.
-    pub fn start(url: &str, tcp_port: u16) -> std::io::Result<SdrConnectDaemon> {
+    ///
+    /// `monitor_sink`: a live [`crate::monitor::MonitorSink`] when the caller has one to give
+    /// (the production tick loop does — see `service.rs`'s `open_rig`/`open_cat` doc comments
+    /// for the chain this arrives through). When `Some`, handed straight to
+    /// [`SdrConnectIq::start`], which then pushes demodulated audio into it from its OWN
+    /// real-time thread instead of relying solely on the tick-driven `take_audio()` pull — see
+    /// that module's doc for why the difference is audible (choppy vs. smooth). `None` (the
+    /// very first connection at app startup, and every background probe/test) just means this
+    /// particular connection falls back to the tick-driven path until the daemon next restarts
+    /// with a real sink — never a hard failure either way.
+    pub fn start(
+        url: &str,
+        tcp_port: u16,
+        monitor_sink: Option<crate::monitor::MonitorSink>,
+    ) -> std::io::Result<SdrConnectDaemon> {
         let url = url.trim();
         if url.is_empty() {
             return Err(std::io::Error::new(
@@ -241,7 +255,7 @@ impl SdrConnectDaemon {
         // unreachable a second time in a row would be surprising, but a strict device/stream
         // limit on the SDRconnect side is plausible), fail the whole daemon rather than leaving
         // a CAT-only half-daemon that reports control success but is silently deaf.
-        let iq = SdrConnectIq::start(url, demod.clone())?;
+        let iq = SdrConnectIq::start(url, demod.clone(), monitor_sink)?;
         let backend = Arc::new(SdrConnectBackend {
             client,
             demod,
@@ -308,7 +322,7 @@ mod tests {
 
     #[test]
     fn empty_url_is_refused_before_dialing() {
-        let err = SdrConnectDaemon::start("   ", 0).unwrap_err();
+        let err = SdrConnectDaemon::start("   ", 0, None).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
