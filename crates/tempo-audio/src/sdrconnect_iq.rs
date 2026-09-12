@@ -61,9 +61,10 @@ use crate::sdrconnect_dsp::{
 /// no NCO retuning, the whole captured block is either "wide enough" or "not", never partially
 /// useful.
 pub const IQ_SAMPLE_RATE_HZ: f64 = 250_000.0;
-const STAGE1_DECIM: usize = 10;
-/// The rate every mode's channel filter and demodulator actually run at.
-const STAGE1_RATE_HZ: f64 = IQ_SAMPLE_RATE_HZ / STAGE1_DECIM as f64;
+/// The Stage 1 output rate every mode's channel filter targets — a TARGET, not a guarantee: see
+/// `connect_and_arm`'s doc for why the actual rate used at runtime is derived from what
+/// SDRconnect confirms, not from `IQ_SAMPLE_RATE_HZ` divided by a fixed decimation factor.
+const TARGET_STAGE1_RATE_HZ: f64 = 25_000.0;
 const FINAL_RATE_HZ: u32 = 12_000;
 /// Binary message type for Primary-device raw IQ (SDRconnect WebSocket API 1.0.3, "Binary
 /// Messages"). Secondary-device IQ (type 5) is out of scope — Phase 1 is a single-tuner (single
@@ -94,12 +95,15 @@ enum Stage2 {
 }
 
 /// Build the Stage 2 filter + demod state for `mode`/`bandwidth_hz`, running at
-/// `STAGE1_RATE_HZ`. `bandwidth_hz == 0` (never configured, e.g. before the first CAT `M`/`F`
-/// command) falls back to a sane per-mode default rather than building a zero-width filter.
-fn build_stage2(mode: DemodMode, bandwidth_hz: u32) -> Stage2 {
-    // Stay comfortably clear of the 12.5 kHz Nyquist at STAGE1_RATE_HZ regardless of what the
-    // operator (or WSJT-X, via rigctld `M`) asks for — a wider request is clamped, not refused.
-    let nyquist_margin = STAGE1_RATE_HZ * 0.46;
+/// `stage1_rate_hz` — the CONFIRMED Stage 1 output rate for the current connection (see
+/// `connect_and_arm`'s doc), not a compile-time constant, since it depends on whatever rate
+/// SDRconnect actually settled on. `bandwidth_hz == 0` (never configured, e.g. before the first
+/// CAT `M`/`F` command) falls back to a sane per-mode default rather than building a zero-width
+/// filter.
+fn build_stage2(mode: DemodMode, bandwidth_hz: u32, stage1_rate_hz: f64) -> Stage2 {
+    // Stay comfortably clear of the Nyquist at `stage1_rate_hz` regardless of what the operator
+    // (or WSJT-X, via rigctld `M`) asks for — a wider request is clamped, not refused.
+    let nyquist_margin = stage1_rate_hz * 0.46;
     match mode {
         DemodMode::Am | DemodMode::Nfm | DemodMode::Wfm => {
             let default_bw = match mode {
@@ -111,8 +115,8 @@ fn build_stage2(mode: DemodMode, bandwidth_hz: u32) -> Stage2 {
             let cutoff = (bw / 2.0).min(nyquist_margin);
             let transition = (cutoff * 0.3).max(200.0);
             let taps = design_lowpass(
-                taps_for_transition(STAGE1_RATE_HZ, transition),
-                cutoff / STAGE1_RATE_HZ,
+                taps_for_transition(stage1_rate_hz, transition),
+                cutoff / stage1_rate_hz,
             );
             let is_fm = matches!(mode, DemodMode::Nfm | DemodMode::Wfm);
             // Discriminator gain converts radians/sample to a level roughly comparable to the
@@ -137,10 +141,10 @@ fn build_stage2(mode: DemodMode, bandwidth_hz: u32) -> Stage2 {
                 (-bw, -300.0)
             };
             let taps = design_ssb_bandpass(
-                STAGE1_RATE_HZ,
+                stage1_rate_hz,
                 f_lo,
                 f_hi,
-                taps_for_transition(STAGE1_RATE_HZ, 300.0),
+                taps_for_transition(stage1_rate_hz, 300.0),
             );
             Stage2::Bandpass {
                 filter: ComplexFir::new(taps),
@@ -153,10 +157,10 @@ fn build_stage2(mode: DemodMode, bandwidth_hz: u32) -> Stage2 {
             // recovers an audible tone directly.
             let half = ((bandwidth_hz.max(100) as f64) / 2.0).clamp(75.0, 400.0);
             let taps = design_ssb_bandpass(
-                STAGE1_RATE_HZ,
+                stage1_rate_hz,
                 700.0 - half,
                 700.0 + half,
-                taps_for_transition(STAGE1_RATE_HZ, 150.0),
+                taps_for_transition(stage1_rate_hz, 150.0),
             );
             Stage2::Bandpass {
                 filter: ComplexFir::new(taps),
@@ -189,14 +193,23 @@ fn run_stage2(stage2: &mut Stage2, input: &[Iq]) -> Vec<f32> {
     }
 }
 
-/// Connect and arm streaming: set the IQ sample rate, then turn on device + IQ streaming. Called
-/// once at start and again by the worker loop after every reconnect.
-fn connect_and_arm(url: &str) -> Result<SdrConnect, SdrConnectError> {
+/// Connect and arm streaming: set the IQ sample rate, then turn on device + IQ streaming.
+/// Returns the sample rate SDRconnect actually CONFIRMS is active — read back rather than
+/// assumed, because the RSP1B's ADC only supports specific decimated rates and the API may
+/// silently round a request to the nearest one instead of erroring. Every downstream rate
+/// (Stage 1's decimation factor, its filter design, the final resample to 12 kHz) is derived
+/// from this confirmed value in `run`, not from the constant that was merely requested — a
+/// mismatch here, even a small one, means every filter cutoff and the final sample rate are
+/// systematically wrong, heard as persistent, uniform choppiness rather than an occasional
+/// glitch (found 2026-09 chasing exactly that report). Called once at start and again by the
+/// worker loop after every reconnect, in case a reconnect ever lands on a different rate.
+fn connect_and_arm(url: &str) -> Result<(SdrConnect, f64), SdrConnectError> {
     let client = SdrConnect::connect(url)?;
     client.set_sample_rate_hz(IQ_SAMPLE_RATE_HZ)?;
+    let confirmed_rate = client.sample_rate_hz()?;
     client.set_device_stream_enable(true)?;
     client.set_iq_stream_enable(true)?;
-    Ok(client)
+    Ok((client, confirmed_rate))
 }
 
 /// Decode one SDRconnect binary message into normalised complex samples, or `None` if it is not
@@ -260,7 +273,7 @@ impl SdrConnectIq {
         }
         // Fail fast on an unreachable/misconfigured address — the ongoing loop only needs to
         // self-heal a connection that WAS working, not diagnose one that never was.
-        let first = connect_and_arm(&url)
+        let (first, first_rate) = connect_and_arm(&url)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -272,7 +285,18 @@ impl SdrConnectIq {
         let audio2 = audio.clone();
         let thread = std::thread::Builder::new()
             .name("sdrconnect-iq".into())
-            .spawn(move || Self::run(first, url, demod, stop2, healthy2, audio2, monitor_sink))
+            .spawn(move || {
+                Self::run(
+                    first,
+                    first_rate,
+                    url,
+                    demod,
+                    stop2,
+                    healthy2,
+                    audio2,
+                    monitor_sink,
+                )
+            })
             .map_err(std::io::Error::other)?;
 
         Ok(SdrConnectIq {
@@ -300,8 +324,33 @@ impl SdrConnectIq {
             .unwrap_or_default()
     }
 
+    /// Build Stage 1 (coarse decimation) and the final-to-12-kHz resampler for a CONFIRMED IQ
+    /// rate — see `connect_and_arm`'s doc for why this is derived from what SDRconnect actually
+    /// reports rather than a compile-time constant. Picks whatever decimation factor lands
+    /// closest to [`TARGET_STAGE1_RATE_HZ`], so a rate SDRconnect rounded to something other
+    /// than the requested [`IQ_SAMPLE_RATE_HZ`] still gets correctly-scaled filters rather than
+    /// silently reusing math built for a different rate. Returns the filter, the resampler, and
+    /// the ACTUAL Stage 1 rate achieved (`actual_rate_hz / decim`, not exactly the target — used
+    /// to rebuild Stage 2 and the monitor resampler to match).
+    fn build_front_end(actual_rate_hz: f64) -> (FirDecimator, CaptureResampler, f64) {
+        let decim = (actual_rate_hz / TARGET_STAGE1_RATE_HZ).round().max(1.0) as usize;
+        let stage1_rate_hz = actual_rate_hz / decim as f64;
+        // Anti-alias cutoff at ~44% of the new Nyquist (stage1_rate_hz / 2) — comfortable margin
+        // regardless of what `decim` turned out to be, mirroring the fixed-rate version's
+        // 11 kHz-of-12.5 kHz margin proportionally rather than as an absolute number.
+        let cutoff_hz = stage1_rate_hz * 0.44;
+        let taps = design_lowpass(
+            taps_for_transition(actual_rate_hz, 3_000.0),
+            cutoff_hz / actual_rate_hz,
+        );
+        let stage1 = FirDecimator::new(taps, decim.max(1));
+        let resampler = CaptureResampler::new(stage1_rate_hz.round().max(1.0) as u32, FINAL_RATE_HZ);
+        (stage1, resampler, stage1_rate_hz)
+    }
+
     fn run(
         first: SdrConnect,
+        first_rate: f64,
         url: String,
         demod: Arc<DemodParams>,
         stop: Arc<AtomicBool>,
@@ -309,16 +358,10 @@ impl SdrConnectIq {
         audio: Arc<Mutex<Vec<f32>>>,
         monitor_sink: Option<crate::monitor::MonitorSink>,
     ) {
-        // Stage 1 is built ONCE — it never depends on mode, only on the fixed IQ/Stage-1 rates.
-        let stage1_taps = design_lowpass(
-            taps_for_transition(IQ_SAMPLE_RATE_HZ, 3_000.0),
-            11_000.0 / IQ_SAMPLE_RATE_HZ,
-        );
-        let mut stage1 = FirDecimator::new(stage1_taps, STAGE1_DECIM);
-        let mut resampler = CaptureResampler::new(STAGE1_RATE_HZ as u32, FINAL_RATE_HZ);
+        let (mut stage1, mut resampler, mut stage1_rate_hz) = Self::build_front_end(first_rate);
         let mut current_mode = demod.mode();
         let mut current_bw = demod.bandwidth_hz();
-        let mut stage2 = build_stage2(current_mode, current_bw);
+        let mut stage2 = build_stage2(current_mode, current_bw, stage1_rate_hz);
         // A SECOND resampler, 12 kHz -> whatever rate the monitor's ring expects
         // (`MonitorSink::rate()` — the sound card's own capture rate). Kept separate from
         // `resampler` above: decode always wants exactly 12 kHz, the monitor wants whatever the
@@ -331,8 +374,20 @@ impl SdrConnectIq {
         while !stop.load(Ordering::Relaxed) {
             let Some(active) = client.take() else {
                 match connect_and_arm(&url) {
-                    Ok(c) => {
+                    Ok((c, rate)) => {
                         healthy.store(true, Ordering::Relaxed);
+                        // Rebuilt UNCONDITIONALLY on every reconnect, even though the confirmed
+                        // rate will almost always match the previous connection's: a reconnect
+                        // can in principle land on a different rate (a changed SDRconnect
+                        // config, a firmware update), and rebuilding is cheap enough that
+                        // checking first would only add a way to get this wrong. Mode/bandwidth
+                        // state (`current_mode`/`current_bw`) survives the reconnect unchanged;
+                        // only the rate-dependent filters are rebuilt.
+                        let (new_stage1, new_resampler, new_rate) = Self::build_front_end(rate);
+                        stage1 = new_stage1;
+                        resampler = new_resampler;
+                        stage1_rate_hz = new_rate;
+                        stage2 = build_stage2(current_mode, current_bw, stage1_rate_hz);
                         client = Some(c);
                     }
                     Err(_) => {
@@ -357,7 +412,7 @@ impl SdrConnectIq {
                     if m != current_mode || bw != current_bw {
                         current_mode = m;
                         current_bw = bw;
-                        stage2 = build_stage2(current_mode, current_bw);
+                        stage2 = build_stage2(current_mode, current_bw, stage1_rate_hz);
                     }
 
                     let decimated = stage1.process(&iq);
