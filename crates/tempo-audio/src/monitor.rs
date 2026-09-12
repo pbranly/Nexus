@@ -15,7 +15,8 @@
 //! the `device` feature so they are unit-testable in the headless workspace build;
 //! the cpal output stream lives behind `#[cfg(feature = "device")]`.
 
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// A bounded, wait-free SPSC ring of `f32` samples.
 ///
@@ -153,6 +154,49 @@ impl SpscRing {
     }
 }
 
+/// A cheap, `Clone`-able handle to a [`Monitor`]'s ring — lives OUTSIDE the `device`-feature-gated
+/// `device_monitor` module on purpose, unlike `Monitor` itself: it holds no `cpal` type at all
+/// (just an `Arc<SpscRing>` and two `Arc<AtomicBool>`s), so a caller that needs to accept or pass
+/// one — `sdrconnect_iq::SdrConnectIq`, `sdrconnect_daemon::SdrConnectDaemon`, both unconditional
+/// modules that must compile in a headless (no `device` feature) build too — can do so without
+/// pulling `cpal` in. Built by [`Monitor::sink`], which DOES live behind that gate.
+///
+/// See [`Monitor::sink`]/[`Monitor::feed_native_audio`]'s docs for why this exists alongside
+/// that method rather than instead of it: this is for a NATIVE audio source's own real-time
+/// thread (`sdrconnect_iq::SdrConnectIq`); `feed_native_audio` remains the tick-driven path
+/// (`flexdax::FlexDax`) for sources with no such thread of their own.
+#[derive(Clone)]
+pub struct MonitorSink {
+    ring: Arc<SpscRing>,
+    enabled: Arc<AtomicBool>,
+    tx_mute: Arc<AtomicBool>,
+    rate: u32,
+}
+
+impl MonitorSink {
+    /// The rate every sample pushed through [`MonitorSink::push`] must already be at — the
+    /// SAME rate the sound-card capture callback fills this ring at, since one output stream
+    /// reads it as a single unbroken timeline. The caller resamples to this, not the other
+    /// way around: `Monitor` does not know the caller's native rate (SDRconnect's Stage 1
+    /// output, 25 kHz — see `sdrconnect_iq`), so it cannot do that conversion itself.
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Push already-resampled-to-[`MonitorSink::rate`] mono `f32` samples straight into the
+    /// ring, gated exactly like [`Monitor::feed_native_audio`] (duplicated, not shared, for
+    /// the same cross-thread reason that method's doc gives).
+    pub fn push(&self, samples_at_rate: &[f32]) {
+        if samples_at_rate.is_empty() {
+            return;
+        }
+        if !self.enabled.load(Ordering::Relaxed) || self.tx_mute.load(Ordering::Relaxed) {
+            return;
+        }
+        self.ring.push_slice(samples_at_rate);
+    }
+}
+
 /// The TX-device guard, as a pure predicate: `true` when opening the monitor on
 /// `monitor_device` would feed the received band into the rig's TX audio device
 /// (`audio_out`) and thus transmit it back out. When it returns `true` the monitor
@@ -232,11 +276,11 @@ impl MonoResampler {
 }
 
 #[cfg(feature = "device")]
-pub use device_monitor::{Monitor, MonitorSink};
+pub use device_monitor::Monitor;
 
 #[cfg(feature = "device")]
 mod device_monitor {
-    use super::{MonoResampler, SpscRing};
+    use super::{MonoResampler, MonitorSink, SpscRing};
     use crate::device::{dispatch_format, AUDIO_HOST_LOCK};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{SampleFormat, Stream};
@@ -405,43 +449,6 @@ mod device_monitor {
             }
             self.enabled.store(true, Ordering::Release);
             Ok(())
-        }
-    }
-
-    /// A cheap, `Clone`-able handle to a `Monitor`'s ring — see
-    /// [`Monitor::sink`]/[`Monitor::feed_native_audio`]'s docs for why this exists alongside
-    /// that method rather than instead of it: this is for a NATIVE audio source's own real-time
-    /// thread (`sdrconnect_iq::SdrConnectIq`); `feed_native_audio` remains the tick-driven path
-    /// (`flexdax::FlexDax`) for sources with no such thread of their own.
-    #[derive(Clone)]
-    pub struct MonitorSink {
-        ring: Arc<SpscRing>,
-        enabled: Arc<AtomicBool>,
-        tx_mute: Arc<AtomicBool>,
-        rate: u32,
-    }
-
-    impl MonitorSink {
-        /// The rate every sample pushed through [`MonitorSink::push`] must already be at — the
-        /// SAME rate the sound-card capture callback fills this ring at, since one output stream
-        /// reads it as a single unbroken timeline. The caller resamples to this, not the other
-        /// way around: `Monitor` does not know the caller's native rate (SDRconnect's Stage 1
-        /// output, 25 kHz — see `sdrconnect_iq`), so it cannot do that conversion itself.
-        pub fn rate(&self) -> u32 {
-            self.rate
-        }
-
-        /// Push already-resampled-to-[`MonitorSink::rate`] mono `f32` samples straight into the
-        /// ring, gated exactly like [`Monitor::feed_native_audio`] (duplicated, not shared, for
-        /// the same cross-thread reason that method's doc gives).
-        pub fn push(&self, samples_at_rate: &[f32]) {
-            if samples_at_rate.is_empty() {
-                return;
-            }
-            if !self.enabled.load(Ordering::Relaxed) || self.tx_mute.load(Ordering::Relaxed) {
-                return;
-            }
-            self.ring.push_slice(samples_at_rate);
         }
     }
 
