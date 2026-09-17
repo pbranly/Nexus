@@ -82,6 +82,9 @@ export function checkRigForm(
   // and the CAT-keying check below would refuse `pttMethod: 'cat'` with no rig model, which is
   // exactly the normal OmniRig setup.
   if (form.rigConn === 'omnirig') return out
+  // Same shape a third way: SDRconnect's WebSocket address IS the connection, and its "rig
+  // model" is SDRconnect's own device selection, not a Hamlib number.
+  if (form.rigConn === 'sdrconnect') return out
 
   const port = form.serialPort.trim()
   if (!port) {
@@ -215,6 +218,7 @@ export function nativeCivBlockedReason(rigModel: number, rigConn: string): strin
   if (!NATIVE_CIV_MODELS.includes(rigModel)) return 'not-supported'
   if (rigConn === 'network') return 'network'
   if (rigConn === 'omnirig') return 'omnirig'
+  if (rigConn === 'sdrconnect') return 'sdrconnect'
   return null
 }
 

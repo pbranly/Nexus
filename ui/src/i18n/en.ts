@@ -118,7 +118,7 @@ export const EN = {
   // remote parity batch 1
   "remote.b1.outsidePrivileges": "Not changed. That transmit frequency is outside your license privileges.",
   "remote.b1.workUnavailable": "This spot can’t be worked from a browser. Nothing changed at the station.",
-  "remote.b1.rotatorNoHeading": "No heading from the station — nothing is configured, or the rotator control isn’t answering.",
+  "remote.b1.rotatorNoHeading": "Heading isn’t shown remotely yet.",
   "remote.b1.rotatorPointing": "Pointing the rotator at {{call}}.",
   "remote.transmitAllow": "Allow FT8/FT4 transmission",
   "remote.transmitRevoke": "Revoke transmission permission",
@@ -314,30 +314,6 @@ export const EN = {
   "remote.b3.potaAlertsOff": "Alert me about new POTA activations",
   "remote.b3.potaAlertsOn": "Stop POTA activation alerts",
   "remote.b3.potaAlertsStale": "The station has no fresh POTA spots right now. Alerts resume when its POTA board or map refreshes them.",
-  // Listening to the station's receive audio. Muted until asked for, and the state line
-  // exists so a dead LINK never reads as a dead BAND.
-  "remote.audio.start": "Listen",
-  "remote.audio.stop": "Stop listening",
-  "remote.audio.connecting": "Connecting audio",
-  "remote.audio.live": "Listening to the station",
-  "remote.audio.gap": "Audio gap - the link is losing packets",
-  "remote.audio.stalled": "Audio stalled - the link, not the band",
-  "remote.audio.unsupported": "This browser cannot play station audio. Chrome, Edge, Firefox on a computer, or Safari 26 can.",
-  "remote.audio.sourceChanged": "The station changed its audio device. Press Listen again.",
-  "remote.audio.inUse": "Another browser is listening to this station.",
-  "remote.audio.notController": "Audio stopped because station control was lost.",
-  "remote.audio.stopped": "Audio stopped.",
-  // ⚠️ REMOTE STOP: ACCEPTANCE IS NOT RF. The station answers an accepted Stop at once, and when
-  // its Engine is held the halt runs afterwards on its own thread — so "stopped" here would tell the
-  // operator the rig is unkeyed while it is still on the air. It says SENT until the station's own
-  // reading shows the transmitter free, and only then STOPPED.
-  'remote.stop.sending': 'Sending stop…',
-  'remote.stop.sent': 'Stop sent',
-  'remote.stop.sent.title':
-    'The station has accepted the Stop. It is not off the air until the station reports the transmitter free.',
-  'remote.stop.stopped': 'Stopped',
-  'remote.stop.stopped.title': 'The station reports the transmitter free.',
-  "remote.audio.unavailable": "The station has no audio to send right now.",
   "remote.b3.potaAlertsOlder": "POTA activation alerts need a newer Nexus at the station.",
   "remote.b3.awardsObserver": "Journey and uploads are not available remotely yet. Confirmation diagnostics come from the station.",
   "remote.b3.sstvSave": "Save",
@@ -1129,18 +1105,6 @@ export const EN = {
   'logbook.row.pushQrz.title':
     'Push {{call}} to your QRZ logbook (re-push is safe — duplicates are detected)',
   'logbook.row.pushQrz.aria': 'Push {{call}} to QRZ',
-  'logbook.row.qrzCorrect.title':
-    'Correct {{call}} in your QRZ logbook — overwrites the copy QRZ already holds. One contact at a time; you confirm what changes first.',
-  'logbook.row.qrzCorrect.aria': 'Correct {{call}} at QRZ',
-  'logbook.qrzCorrect.aria': 'Correct a contact at QRZ',
-  'logbook.qrzCorrect.heading': 'Correct {{call}} at QRZ',
-  'logbook.qrzCorrect.reading': 'Reading QRZ’s copy of {{call}}…',
-  'logbook.qrzCorrect.cancel': 'Cancel',
-  'logbook.qrzCorrect.confirm': 'Correct it at QRZ',
-  'logbook.qrzCorrect.busy': 'Sending…',
-  'logbook.qrzCorrect.close': 'Close',
-  'logbook.qrzCorrect.recover': 'Delete the duplicate QRZ added',
-  'logbook.qrzCorrect.recovering': 'Deleting…',
   'logbook.row.pushClublog.title':
     'Push {{call}} to ClubLog (re-push is safe — duplicates are detected)',
   'logbook.row.pushClublog.aria': 'Push {{call}} to ClubLog',
@@ -1565,7 +1529,6 @@ export const EN = {
   'needed.filter.newZone': 'New zone',
   'needed.filter.newGrid': 'New grid',
   'needed.filter.newState': 'New state',
-  'needed.filter.newPark': 'New park',
   'needed.filter.confirm': 'Needs confirm',
   'needed.filter.dxped': 'DXped',
   // `{{mode}}` is a mode-class name — the tooltip is prose, the mode is not.
@@ -1669,9 +1632,6 @@ export const EN = {
   'need.badge.state.label': 'STATE',
   'need.badge.state.title':
     'New US state on this band (5BWAS) — a hint from the grid; confirm from the log',
-  'need.badge.park.label': 'PARK',
-  'need.badge.park.title':
-    'A park or summit you have not worked in the activation running right now — POTA credits a reference once per activator per UTC day, so the same park tomorrow counts again',
   'need.badge.dxped.label': 'DXPED',
   'need.badge.dxped.title': 'Active DXpedition — limited-time window',
   'need.badge.confirm.label': 'LoTW',
@@ -1702,10 +1662,6 @@ export const EN = {
   'need.chip.newState.label': 'STATE',
   'need.chip.newState.short': 'ST',
   'need.chip.newState.title': 'New US state on this band — best-guess from the grid',
-  'need.chip.newPark.label': 'NEW PARK',
-  'need.chip.newPark.short': 'PARK',
-  'need.chip.newPark.title':
-    'A park or summit you have not worked in this activation. An activator comes back to the same reference again and again and each visit is a fresh contact, so this clears when you log them today and returns next time they are out.',
   'need.chip.confirm.label': 'LoTW',
   'need.chip.confirm.short': 'LoTW',
   'need.chip.confirm.title':
@@ -2534,10 +2490,6 @@ export const EN = {
   'spots.post.busy': 'Spotting…',
   'spots.post.done': 'Spotted {{call}} on the cluster',
   'spots.post.failed': 'Spot failed',
-  'spots.post.confirm.title': 'Spot {{call}} to the DX cluster?',
-  'spots.post.confirm.body': '{{call}} on {{freq}} MHz, posted from the station\u2019s cluster login. Everyone on the cluster sees it.',
-  'spots.post.confirm.post': 'Post spot',
-  'remote.spotNoCluster': 'The station has no DX cluster connected, so nothing was sent.',
 
   // The colour + type key, rendered by BOTH the band strip and the band map from one
   // component — the two surfaces must explain their dots identically, so they share these
@@ -4332,17 +4284,6 @@ export const EN = {
   // ⚠️ `CHIRP ▸ File ▸ Import` is another program's menu path — keep it as CHIRP prints it.
   'program.export.saved.chirp':
     'Saved {{path}} — open CHIRP ▸ File ▸ Import, then upload to your radio',
-  // From a browser the file lands in THIS machine's downloads, not the shack's, and the station
-  // names no directory in it (it does not record where a saved channel came from), so these say
-  // where the file went rather than quoting a path the operator cannot open.
-  'program.export.browser.saved': 'Saved {{name}} to this browser’s downloads.',
-  'program.export.browser.savedChirp':
-    'Saved {{name}} to this browser’s downloads — open CHIRP ▸ File ▸ Import, then upload to your radio',
-  'program.export.browser.empty': 'The station has no saved channel list to export.',
-  'program.export.browser.tooLarge':
-    'This channel list is too large to download here. Export it with Nexus at the station.',
-  'program.export.browser.failed':
-    'The channel file did not arrive intact, so nothing was saved. Try again.',
 
   // What the workbench says after it acts. The shift is a sign and a number of MHz.
   'program.tune.done': 'Tuned {{freq}} {{mode}} — {{shift}}{{tone}}',
@@ -4924,6 +4865,7 @@ export const EN = {
   'settings.rigControl.conn.label': 'Connection',
   'settings.rigControl.conn.serial': 'Serial (USB / COM port)',
   'settings.rigControl.conn.network': 'Network (host:port — SDR software, or a remote rig)',
+  'settings.rigControl.conn.sdrconnect': 'SDRconnect (SDRplay RSP receivers)',
   'settings.rigControl.conn.omnirig': 'OmniRig (the radio is set up in OmniRig)',
   'settings.rigControl.conn.omnirig.unavailable': 'OmniRig — Windows only',
   'settings.rigControl.conn.hint':
@@ -4932,6 +4874,9 @@ export const EN = {
     "<b>OmniRig</b> hands rig control to VE3NEA's OmniRig server, the one most Windows logging and contest programs already use. Set the radio up <em>in OmniRig</em> — rig type, COM port, baud — and Nexus talks to it there, so the Rig Model, Serial Port and Baud above are not used. {{availability}}",
   'settings.rigControl.conn.omnirig.unavailable.why':
     'It is greyed out here because OmniRig is a Windows program and this is not Windows.',
+  'settings.rigControl.sdrconnect.address.label': 'SDRconnect address',
+  'settings.rigControl.sdrconnect.address.hint':
+    "SDRconnect's own WebSocket address (Settings inside SDRconnect shows the port, default 5454). Nexus drives frequency, mode and RF gain through it; SDRconnect keeps demodulating and producing audio itself — this does not change how you listen, only how Nexus tunes it.",
   'settings.rigControl.conn.omnirig.install':
     'Install and run OmniRig first; Nexus will not start without it.',
   // ⚠️ RIG 1 / RIG 2 are the labels OmniRig's OWN window uses. They are how the operator
@@ -5021,9 +4966,9 @@ export const EN = {
   'settings.rigControl.plainSsb.label': 'Data modes use plain SSB',
   'settings.rigControl.plainSsb.hint':
     "<b>Leave this off unless you know you need it.</b> Nexus normally puts the radio in its DATA submode (DATA-U / USB-D / PKTUSB) for FT8, FT4, RTTY-AFSK and SSTV, because on most rigs that is the only mode where the USB codec reaches the transmitter. Turn this on and Nexus commands plain <b>USB/LSB</b> for those modes instead, and stays there — through band changes and when you call a station. Correct if your transmit audio goes in the <b>microphone</b> path, as with an interface wired to the mic jack (some RIGblaster models) — or if you simply prefer plain USB to the DATA submode (for its wider receive passband, say) and your rig is set to send its USB-codec audio in SSB, which on many modern rigs (FT-991A, IC-7300 and the like) is a single menu item. Either way the rig has to put the audio you're feeding onto the air in plain SSB: where it does not — the codec feeds only the data port and nothing carries in SSB — plain SSB takes audio from the mic and the radio transmits <b>no RF at all</b>, a red TX light and nothing on the air. <b>Per radio</b>, since it depends on how that rig is cabled and set. True FSK RTTY is unaffected — it keeps the rig's own RTTY mode.",
-  'settings.rigControl.sstvHoldData.label': 'Hold the data mode while SSTV is receiving',
+  'settings.rigControl.sstvHoldData.label': 'Hold FM-D while SSTV is receiving',
   'settings.rigControl.sstvHoldData.hint':
-    "Keeps this radio in the <b>data</b> submode for the whole time the SSTV receiver is running, instead of only while a picture is queued or going out — FM-D / DATA-FM on an FM channel, and USB-D / LSB-D on HF. Off by default, which is what Nexus does today: it commands the data submode around a send and puts the radio back in plain FM or SSB in between, so a rig parked on an SSTV calling channel keeps dropping out of the data mode. That revert is deliberate — an SSTV send once keyed a data mode into an FM repeater input — but it is the wrong answer if you sit on an SSTV calling channel for the evening. <b>Stop the receiver before you go back to voice.</b> The receiver keeps running after you leave the SSTV screen, and while it runs this radio is held in the data submode, where transmit audio comes from the data port and your microphone modulates nothing. <b>Per radio</b>, since it depends on how that rig is cabled and what you use it for.",
+    "Keeps this radio in the FM <b>data</b> submode (FM-D / DATA-FM) for the whole time the SSTV receiver is running, instead of only while a picture is queued or going out. Off by default, which is what Nexus does today: it commands the data submode around a send and puts the radio back in plain FM in between, so a rig parked on an FM SSTV channel keeps dropping out of FM-D. That revert is deliberate — an SSTV send once keyed a data mode into an FM repeater input — but it is the wrong answer if you sit on an FM SSTV calling channel for the evening. <b>Stop the receiver before you go back to voice.</b> The receiver keeps running after you leave the SSTV screen, and while it runs this radio is held in the data submode, where transmit audio comes from the data port and your microphone modulates nothing. <b>Per radio</b>, since it depends on how that rig is cabled and what you use it for.",
   'settings.rigControl.icomNative.label': 'Native Icom CI-V (early access)',
   'settings.rigControl.icomNative.hint':
     'Nexus drives this Icom\'s CI-V directly instead of launching rigctld — unlocking the rig\'s real spectrum scope in the waterfall ("CI-V RF") and instant dial tracking. The scope needs <b>115200 baud, set the same on BOTH the radio and Nexus</b>: (1) on the rig, Menu ▸ SET ▸ Connectors ▸ CI-V ▸ "CI-V USB Baud Rate" = <b>115200</b>; (2) on the rig, same menu, "CI-V USB Port" = "Unlink from [REMOTE]"; (3) the <b>Baud</b> field above = <b>115200</b> to match. Below that the rig refuses to stream the scope (CAT still works; the panadapter just stays off). Save to apply; turn off any time to return to the classic Hamlib path.',
@@ -5499,16 +5444,6 @@ export const EN = {
   'settings.transmit.powerCaps.hint':
     'A ceiling on RF output per mode — leave blank for full power. FT8/FT4/RTTY run ~100% duty cycle, so capping the Digital modes (e.g. 30%) protects your finals and any amplifier. The rig is brought down to the cap the moment you enter a capped mode, not only when you touch the power slider.',
 
-  // The high-SWR cutoff. Off by default, and offered only where Nexus can put a number to the
-  // rig's SWR — the `.unverified` line is what a rig outside that set is told, and it says
-  // "not yet" because the cure is a bench measurement, not a missing feature.
-  'settings.transmit.swrStop.label': 'Stop transmitting when SWR is high',
-  'settings.transmit.swrStop.threshold': 'Stop above',
-  'settings.transmit.swrStop.hint':
-    'Two readings in a row above this and Nexus stops transmitting, exactly as Stop TX does, and tells you why. It never starts a transmission and never turns TX back on — you do that once the antenna is sorted out. Off by default; a high reading on one poll is ignored, so a tuner stepping or a keyup transient will not cut you off.',
-  'settings.transmit.swrStop.unverified':
-    'This radio\'s SWR reading isn\'t verified yet, so Nexus won\'t stop your transmission on it. Nexus only trusts the number where it knows the radio\'s own scale — Icom over native CI-V, and FlexRadio. On other radios the figure can be far out: some show a near-perfect match on their own meter while reporting a fault here.',
-
   // `Test CAT`, `Rig Model` and `Serial Port` are the names of controls in Rig & CAT, and
   // `rigctld` is the daemon's own; the call site supplies the emphasis for each.
   'settings.transmit.note':
@@ -5981,10 +5916,6 @@ export const EN = {
     'This is the mode the SSTV screen starts on; you can still change it there for one picture. <b>Automatic</b> follows the band: HF gets Scottie 1 (the NA calling-frequency convention — Martin 1 is the EU one), 2 m gets PD-120, which is what ARISS transmits.',
   'settings.sstv.txPower.label': 'Transmit power',
   'settings.sstv.txPower.aria': 'SSTV transmit power percent',
-  'settings.sstv.fskId.label':
-    'Send my callsign after each picture',
-  'settings.sstv.fskId.hint':
-    'Adds the FSK callsign burst other SSTV software reads and shows under the received picture — the same one Nexus shows you under yours. Off by default: it adds about {{seconds}} seconds of key-down to every transmission. Your callsign is still drawn into the picture either way.',
   'settings.sstv.txPower.hint':
     'The drive the SSTV screen starts on, and the level an image is sent at. Leave it blank and Nexus never touches your power. SSTV is up to 290 seconds of continuous key-down at full duty, so most operators run it well below their SSB drive. Your Phone power cap still applies on top of this.',
   'settings.sstv.callsignNote':
@@ -6609,9 +6540,6 @@ export const EN = {
   'settings.dataFolder.source.default': 'The default folder.',
   'settings.dataFolder.pending': 'Chosen: {{path}} — Nexus uses it the next time it starts.',
   'settings.dataFolder.path.label': 'New folder',
-  'settings.dataFolder.browse': 'Browse…',
-  'settings.dataFolder.browse.title': 'Pick the folder from your computer instead of typing the path. This only fills the box in — nothing changes until you choose one of the buttons below.',
-  'settings.dataFolder.browse.failed': 'Could not open the folder picker',
   'settings.dataFolder.use': 'Use this folder',
   'settings.dataFolder.use.title': 'Use this folder from the next start. Nothing is copied, so the folder should already hold your log.',
   'settings.dataFolder.copy': 'Copy my log and data there',
@@ -7480,7 +7408,7 @@ export const EN = {
   'operate.roster.filter.neededOnly': 'Needed only',
   'operate.roster.filter.hideWorked': 'Hide worked',
   'operate.roster.filter.hideWorked.title':
-    'Hide stations you have already worked — EXCEPT the ones that still fill a need, which stay on the list. That is why a B4 chip can survive this filter: you worked that call on another band or mode and this is still a new slot, or that call is on a park or summit you have not worked in the activation running right now. Turn on Needed only to see just those.',
+    'Hide stations you have already worked — EXCEPT the ones that still fill a need, which stay on the list. That is why a B4 chip can survive this filter: you worked that call on another band or mode, and it is still a new slot here. Turn on Needed only to see just those.',
   'operate.roster.filter.hideBlocked': 'Hide blocked',
   'operate.roster.filter.hideBlocked.title':
     'Drop blocked callsigns from the roster entirely (unchecked: they render dimmed). Alt-double-click a row to block or unblock; the auto-responder never answers blocked calls either way.',
@@ -7558,12 +7486,6 @@ export const EN = {
   'operate.tx.tx6.hint': 'Edit for a directed CQ — CQ DX / CQ NA / CQ POTA / CQ TEST',
   'operate.tx.callCq.title': 'Call CQ (Alt+6)',
   'operate.tx.send.title': 'Send this as the next transmission (Alt+{{n}})',
-  // #254 — a Tx6 text that is not a CQ in WSJT-X's grammar is refused before anything keys,
-  // never quietly replaced by a plain CQ. The first form is used when the operator's own
-  // words re-order into a valid CQ; the second when they do not.
-  'operate.tx.cq.malformed.try': 'Nothing sent — that is not a CQ Nexus can call. Try: {{fix}}',
-  'operate.tx.cq.malformed':
-    'Nothing sent — that is not a CQ Nexus can call. The form is CQ, an optional direction word, then {{mycall}} and your grid.',
 
   // ══════════════════════════════════════════════════════════════════════════════════════
   // THE KEYBOARD AND PICTURE COCKPITS — RTTY, PSK and SSTV.
@@ -7939,14 +7861,6 @@ export const EN = {
   'sstv.arm.off.title':
     'Arm — auto-decode any VIS header heard on the receive audio (RX only, never transmits)',
   'sstv.arm.failed': 'Could not switch the SSTV receiver',
-  'sstv.manualRx.label': 'Start in',
-  'sstv.manualRx.title':
-    'Pick the mode, then press Start to decode a picture already on the air — for a transmission you tuned into late, or one whose header was lost. Nothing guesses the mode; this is your answer.',
-  'sstv.manualRx.mode.aria': 'Mode for a manual receive start',
-  'sstv.manualRx.start.label': 'Start',
-  'sstv.manualRx.start.title':
-    'Start decoding now in the mode chosen beside this, without waiting for a header. Arms the receiver if it is off. Receive only — this never transmits.',
-  'sstv.manualRx.failed': 'Could not start the receiver in that mode',
   // A CONFIGURATION control on the transmit path is not a transmit control (the batch-13
   // ruling): the drive slider moved, Stop did not.
   'sstv.header.power.label': 'Power',
@@ -8070,34 +7984,6 @@ export const EN = {
   // `{{mode}}` is an SSTV mode name and `{{when}}` a UTC stamp; both arrive formatted.
   'sstv.gallery.empty':
     'Received images collect here — auto-saved with callsign (FSK ID), mode, frequency, and time.',
-  'sstv.gallery.open.aria':
-    'Open the {{mode}} picture received {{when}} in its own window',
-  'sstv.gallery.open.title':
-    'Open this picture in its own window — it stays open beside the cockpit while the next one comes in. Esc closes it; ← and → step through the gallery.',
-  'sstv.viewer.empty':
-    'No pictures in the gallery yet.',
-  'sstv.viewer.meta':
-    '{{when}} · {{mhz}} MHz · {{lines}} lines',
-  'sstv.viewer.position':
-    '{{n}} of {{total}}',
-  'sstv.viewer.prev.label':
-    '← Previous',
-  'sstv.viewer.prev.title':
-    'The picture received before this one (← or ↑)',
-  'sstv.viewer.next.label':
-    'Next →',
-  'sstv.viewer.next.title':
-    'The picture received after this one (→ or ↓)',
-  'sstv.viewer.save.label':
-    'Save a copy',
-  'sstv.viewer.save.done':
-    'Saved to {{path}}',
-  'sstv.viewer.save.failed':
-    'Could not save a copy of this picture',
-  'sstv.viewer.close.label':
-    'Close',
-  'sstv.viewer.close.title':
-    'Close this window (Esc)',
   'sstv.gallery.reveal.label': 'Reveal',
   'sstv.gallery.reveal.title': 'Open the folder the received pictures are saved in (Pictures/Nexus SSTV)',
   'sstv.gallery.reveal.failed': 'Could not open the SSTV gallery folder',
@@ -8578,7 +8464,6 @@ export const EN = {
   // stares at. `detail` is the backend's own message where one exists and is interpolated as
   // data, never translated.
   'shell.lane.audio.message': 'RADIO STOPPED',
-  'shell.lane.scopeSpan.message': 'SCOPE SPAN REFUSED',
   'shell.lane.radioConfig.message': 'RADIO CONFIG',
   'shell.lane.txPowerZero.message': 'NO RF POWER',
   'shell.lane.txPowerZero.detail':

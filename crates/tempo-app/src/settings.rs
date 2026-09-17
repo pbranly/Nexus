@@ -206,38 +206,6 @@ pub enum SatUplinkOffer {
 /// other way.
 pub const MAIN_SUB_SAT_RIGS: [u32; 4] = [3081, 3044, 3068, 3090];
 
-/// The human DX-cluster nodes a fresh install connects to — the SSB/phone source (the RBN CW
-/// and digital skimmer feeds are wired automatically and carry no phone; `load` strips any
-/// RBN endpoint from this list). Diverse in HOST, in PORT and in SOFTWARE, on purpose: a
-/// default that is one node is one outage away from an empty Phone board, and a default that
-/// is all on port 23 is one hotel firewall away from it — networks that block outbound telnet
-/// still pass RBN on 7000/7001, so phone dies there SILENTLY while CW keeps flowing.
-///
-/// * `ve7cc.net:23` — CC Cluster, the long-standing community node, standard telnet port.
-/// * `dxc.wa9pie.net:8000` — the high-port fallback for port-23-blocked networks.
-/// * `dx.w1nr.net:23` — DXSpider (YCCC), a different codebase on a different host.
-/// * `dxspots.com:7300` — CC Cluster (AE5E) on DXSpider's conventional high port: the second
-///   non-23 entry, so a port-23-blocked operator is not single-sourced on wa9pie alone.
-///
-/// Verified 2026-09-17 the way Nexus logs in — wait for the trailing login prompt, send the
-/// callsign — and both new nodes then streamed phone-segment spots; reachability is a fact
-/// about that day, not a promise. NOT `dxc.nc7j.com:7373`, although it answers: that is NC7J's
-/// skimmer port, which duplicates RBN and carries no human SSB — the `load` migration resets
-/// exactly that value for that reason.
-///
-/// The first two are the pair every install up to 1.13.0 shipped with. On 2026-09-16 both
-/// were down at once — ve7cc accepted TCP and never sent a login prompt, wa9pie refused — and
-/// every default-config install had no phone source at all; that is the whole reason the list
-/// grew. ve7cc was answering again by 2026-09-17, so read the `load` migration as adding
-/// margin, not as retiring either node. The migration recognises exactly that shipped pair and
-/// appends the rest; the operator edits the list in Settings ▸ Connections.
-pub const DEFAULT_CLUSTER_HOSTS: [&str; 4] = [
-    "ve7cc.net:23",
-    "dxc.wa9pie.net:8000",
-    "dx.w1nr.net:23",
-    "dxspots.com:7300",
-];
-
 /// The subset of [`MAIN_SUB_SAT_RIGS`] that Nexus's OWN CI-V daemon can ever
 /// serve — the intersection with `tempo_audio::rigmodels::icom_scope_model`,
 /// which is the table `native_civ_addr` gates on. **IC-9700 (3081) and
@@ -260,55 +228,6 @@ pub const DEFAULT_CLUSTER_HOSTS: [&str; 4] = [
 /// arrow points the other way) and pinned against the real table by
 /// `tempo-audio`'s `the_native_capable_sat_rig_table_is_the_civ_scope_table`.
 pub const NATIVE_CIV_SAT_RIGS: [u32; 2] = [3081, 3090];
-
-/// The Icom models Nexus's own CI-V daemon serves — mirror of
-/// `tempo_audio::rigmodels::icom_scope_model`, pinned against it by that crate's
-/// `the_swr_verified_civ_rigs_are_the_civ_scope_rigs`.
-///
-/// ⭐ THIS IS THE LIST WHOSE **SWR NUMBER NEXUS CAN STAND BEHIND**, and it is a deliberate
-/// ALLOW-list. The daemon converts the rig's raw 0–255 SWR meter with a curve
-/// (`civ::commands::SWR_CAL`) that is Hamlib's IC-7300/IC-9700 table, and that file's own
-/// warning is the reason this constant exists: *"these are Icom curves and they are applied to
-/// EVERY CI-V rig. A Xiegu speaks CI-V but is not an Icom… a G90 reading 1.2:1 on its own
-/// meter has been reported as 6:1 here"* (#292). A deny-list would have to keep up with every
-/// CI-V radio that ever ships; this one cannot, so an unknown rig falls on the safe side —
-/// the cutoff is simply not offered — rather than inheriting a curve that was never its.
-pub const SWR_VERIFIED_CIV_RIGS: [u32; 5] = [3073, 3078, 3081, 3085, 3090];
-
-/// FlexRadio models whose SWR arrives on the native VITA meter stream, where the scale comes
-/// from FlexLib's own `Meter.cs` (`"SWR" => raw / 128.0`) rather than from a generic curve.
-///
-/// ⚠️ FlexLib is SOURCE, not a published Flex specification, and the sibling meter mappings
-/// are recorded as "verified on hardware pending". This entry is NEEDS-BENCH.
-pub const SWR_VERIFIED_FLEX_RIGS: [u32; 2] = [2036, 23005];
-
-/// Can Nexus put a number to this radio's SWR — i.e. may the high-SWR cutoff be offered at all?
-///
-/// TWO paths and nothing else, because those are the two places a raw meter reading is turned
-/// into a ratio by something we can point at:
-/// * **Native Icom CI-V** — the operator's `icom_native_cat` opt-in, on a transport the daemon
-///   can actually own (not network, not OmniRig — the same two refusals
-///   [`native_civ_reachable`] makes), for a model in [`SWR_VERIFIED_CIV_RIGS`].
-/// * **FlexRadio over the network**, for a model in [`SWR_VERIFIED_FLEX_RIGS`].
-///
-/// Everything else — every plain rigctld rig — reaches `Engine::observe_rig_tx_meters` with
-/// whatever float Hamlib's `l SWR` printed, unscaled, unclamped and per-model unknown. Half of
-/// them report nothing at all. A cutoff there would be a coin toss that unkeys the
-/// transmitter, so the setting is shown DISABLED instead, saying so.
-pub fn swr_scale_verified(
-    rig_model: u32,
-    rig_conn: &str,
-    rig_addr: &str,
-    icom_native_cat: bool,
-) -> bool {
-    let network = rig_conn_is_network(rig_conn, rig_addr);
-    let native_civ = icom_native_cat
-        && !network
-        && !rig_conn_is_omnirig(rig_conn)
-        && SWR_VERIFIED_CIV_RIGS.contains(&rig_model);
-    let flex_vita = network && SWR_VERIFIED_FLEX_RIGS.contains(&rig_model);
-    native_civ || flex_vita
-}
 
 /// Full-duplex satellite rigs with no Main/Sub CAT path in this build: the
 /// VFO pair is A/B and which one is the uplink is a station wiring choice no
@@ -334,33 +253,6 @@ pub fn rig_conn_is_network(rig_conn: &str, rig_addr: &str) -> bool {
     rig_conn == "network" && !rig_addr.is_empty()
 }
 
-/// The CONVENTIONAL FM repeater offset magnitude (Hz) for a dial of `mhz` — 10 m 100 k,
-/// 6 m 1 M, 2 m 600 k, 1.25 m 1.6 M, 70 cm 5 M, 23 cm 12 M; `0` below 28 MHz, where FM
-/// repeaters are not used.
-///
-/// Free-standing because two callers need it about two DIFFERENT dials, and they must not
-/// drift: [`Settings::rptr_offset_hz`] asks about the rig's current dial, while
-/// `Engine::repeater_tune` has to ask about the OUTPUT frequency of a machine the radio has
-/// not moved to yet — the convention it would use once it got there is what decides where
-/// keying it would land.
-pub fn rptr_offset_for_dial(mhz: f64) -> i64 {
-    if mhz >= 1240.0 {
-        12_000_000
-    } else if mhz >= 420.0 {
-        5_000_000
-    } else if mhz >= 222.0 {
-        1_600_000
-    } else if mhz >= 144.0 {
-        600_000
-    } else if mhz >= 50.0 {
-        1_000_000
-    } else if mhz >= 28.0 {
-        100_000
-    } else {
-        0
-    }
-}
-
 /// Is this rig driven through **OmniRig** — VE3NEA's Windows COM rig-control
 /// server — instead of by a rigctld Nexus launches?
 ///
@@ -375,6 +267,21 @@ pub fn rptr_offset_for_dial(mhz: f64) -> i64 {
 /// may carry "OmniRig".
 pub fn rig_conn_is_omnirig(rig_conn: &str) -> bool {
     rig_conn.eq_ignore_ascii_case("omnirig")
+}
+
+/// Is this rig driven through **SDRconnect** — SDRplay's WebSocket control API
+/// (e.g. an RSP1B) — instead of by a rigctld Nexus launches?
+///
+/// ⭐ THE SINGLE SOURCE OF TRUTH for that question, for the same reason
+/// [`rig_conn_is_network`] and [`rig_conn_is_omnirig`] are: `tempo_audio::service::
+/// Transport::is_sdrconnect` calls THIS.
+///
+/// Like OmniRig this needs no second field to gate on: the WebSocket endpoint lives in
+/// `rig_addr` (a `ws://host:port` URL, not a Hamlib `host:port` pair), and an empty address is
+/// caught where the daemon actually dials out, not here. Case-insensitive, same reason as
+/// OmniRig.
+pub fn rig_conn_is_sdrconnect(rig_conn: &str) -> bool {
+    rig_conn.eq_ignore_ascii_case("sdrconnect")
 }
 
 /// Could Nexus's OWN CI-V daemon ever serve a radio wired like this — i.e. is
@@ -396,6 +303,9 @@ pub fn native_civ_reachable(rig_model: u32, rig_conn: &str, rig_addr: &str) -> b
         // to speak CI-V itself. Without this the satellite offer would pre-fill a Main/Sub
         // mapping whose write has no path at all.
         && !rig_conn_is_omnirig(rig_conn)
+        // Same dead end a fourth way: SDRconnect drives the radio over its own WebSocket,
+        // never through a serial CI-V port Nexus could open.
+        && !rig_conn_is_sdrconnect(rig_conn)
 }
 
 impl Settings {
@@ -1224,9 +1134,8 @@ pub struct Settings {
     /// (flat mirror — see [`RadioProfile::data_modes_plain_ssb`]). Default off.
     #[serde(default)]
     pub data_modes_plain_ssb: bool,
-    /// Hold the DATA submode (FM-D on FM, USB-D/LSB-D on HF) for as long as the SSTV receiver
-    /// is running, for the active radio (flat mirror — see
-    /// [`RadioProfile::sstv_hold_data_submode`]). Default off.
+    /// Hold the FM DATA submode for as long as the SSTV receiver is running, for the active
+    /// radio (flat mirror — see [`RadioProfile::sstv_hold_data_submode`]). Default off.
     #[serde(default)]
     pub sstv_hold_data_submode: bool,
     /// DEPRECATED / ignored. Digital now ALWAYS forces the DATA submode (like Phone/CW
@@ -1751,29 +1660,6 @@ pub struct Settings {
     /// Enforced at the single `set_rf_power` chokepoint AND re-applied on mode change
     /// ([`Engine::set_operating_mode`]), so switching SSB→FT8 brings the rig DOWN to the cap
     /// instead of waiting for the operator to touch the slider. See [`Settings::rf_power_ceiling`].
-    /// Stop transmitting when the rig reports a high SWR. **Default OFF**, and it stays off
-    /// until an operator turns it on: this is the one thing in the transmit-meter subsystem
-    /// that ACTS on a reading rather than merely reporting it, against the project's standing
-    /// "notify, never act" rule (`service.rs` — *"notify loudly, never move the radio
-    /// unattended"*). Operator request and ruling, 2026-09-14.
-    ///
-    /// Honoured only while [`swr_scale_verified`] is true for the active radio; on every other
-    /// rig the control is shown disabled, because a cutoff driven by a number we cannot scale
-    /// would unkey the transmitter on a guess (#292 — a Xiegu reading 1.2:1 on its own meter
-    /// reports 6:1 here).
-    ///
-    /// Precedent, such as it is: stock WSJT-X has no SWR logic at all (full source checked); a
-    /// JTDX-derived fork carries "Halt Tx when SWR > 2.5", off by default.
-    #[serde(default)]
-    pub swr_stop_enabled: bool,
-    /// The SWR ratio above which two consecutive keyed readings halt transmit. 2.5:1 by
-    /// default, which is the JTDX-derived fork's number.
-    ///
-    /// ⚠️ CLAMPED ON READ, not on store ([`Settings::swr_stop_ratio`]) — the same shape as
-    /// [`Settings::rf_power_ceiling`], so a hand-edited `settings.json` carrying 0.0 (which
-    /// would halt every over instantly) or a NaN cannot reach the transmit path.
-    #[serde(default = "default_swr_stop_threshold")]
-    pub swr_stop_threshold: f32,
     #[serde(default)]
     pub max_power_phone: Option<f32>,
     #[serde(default)]
@@ -2087,28 +1973,6 @@ pub struct Settings {
     /// it can lower power past the operator's cap but never raise it past one.
     #[serde(default)]
     pub sstv_tx_power_pct: Option<u8>,
-    /// Send the operator's callsign as an FSK ID burst after each transmitted
-    /// picture. **Default OFF** (#FSK-ID, operator-approved 2026-09-15).
-    ///
-    /// The burst is the 45.45-baud two-tone trailer MMSSTV and slowrx read — the
-    /// same one Nexus has always DECODED and shown under a received thumbnail;
-    /// this is the transmit half. It costs about a second of extra key-down
-    /// (`tempo_sstv::fsk_id_seconds`), which is why it is opt-in rather than on:
-    /// an operator running a long mode close to their TX watchdog should not have
-    /// their over grow because of an upgrade.
-    ///
-    /// ⚠️ TRANSMIT PATH, and the reason it is safe is structural rather than
-    /// careful. The flag reaches exactly one place — `sstv_send` passes the
-    /// callsign to `encode_image_with_id` — and its only effect is a longer
-    /// sample buffer. The PTT deadline, the TX-watchdog budget check and the
-    /// progress denominator are all computed from THAT buffer's length, and Stop
-    /// TX / the latch / the abort flush the output ring regardless of what is in
-    /// it. Nothing here keys, re-keys, or extends a transmission already running.
-    ///
-    /// It does not replace the callsign burned into the picture (`draw_id`),
-    /// which is what satisfies §97.119 today; it rides alongside it.
-    #[serde(default)]
-    pub sstv_tx_fsk_id: bool,
     /// Whether opening the PSK view starts the receiver.
     ///
     /// The SSTV/APRS auto-arm doctrine, applied to PSK31 from day one (operator
@@ -2410,59 +2274,7 @@ pub struct Settings {
     /// Defaulted to six labelled-but-empty casual slots.
     #[serde(default = "default_voice_messages")]
     pub voice_messages: Vec<VoiceMessage>,
-
-    /// ⛔ **THE FORWARD-COMPATIBILITY CATCH-ALL. Not a setting — do not read it.** Every
-    /// key `settings.json` carries that this build has no field for, held verbatim so the
-    /// next `save` writes it back out.
-    ///
-    /// # Why it exists
-    ///
-    /// `settings.json` is ONE file shared by every build that opens the data directory, and
-    /// the operator routinely runs a tester build (`1.13.0-test1`) beside the public release
-    /// against that same directory. Saves are whole-struct: without this field, serde drops
-    /// the keys it does not recognise at load and the next save writes them out of existence.
-    /// Open the tester, configure something new, open the release — and the new configuration
-    /// is gone, with no error and nothing on screen to say it happened. With it, a key an
-    /// older build does not understand is carried through untouched: the older build cannot
-    /// USE the setting, but it can no longer destroy it.
-    ///
-    /// # Why not `deny_unknown_fields`
-    ///
-    /// That is the other way to stop the erasure, and it is worse: the older build would
-    /// REFUSE to parse the file at all, take the `.corrupt` path in [`Settings::load`], and
-    /// start from defaults — blanking the operator's identity and rig config and resetting
-    /// `license_class` to `Open` (which drops the Part 97 TX lockout) over one key it did not
-    /// know. Losing one field is bad; losing the whole file and the TX lockout is worse.
-    ///
-    /// # What this does NOT do, and the cost
-    ///
-    /// It preserves; it cannot interpret. An older build still shows the operator none of
-    /// these settings and still behaves as if they were unset — the preserved value only
-    /// matters again in the build that owns the field. And a key a newer build DELIBERATELY
-    /// removes would otherwise become immortal, carried forward by every build that has the
-    /// catch-all and no field for it. [`RETIRED_KEYS`] is the answer to that: a key this
-    /// build knows is dead is pruned on load rather than preserved, so retirement stays a
-    /// decision this build can make. Nothing prunes a key this build has never heard of,
-    /// which is correct — it cannot know whether that key is new or dead.
-    ///
-    /// `flatten` (rather than reading the raw JSON and diffing key sets) because serde's own
-    /// field matcher decides what is unknown. A hand-rolled diff against a serialized
-    /// `Settings::default()` would call `cloudlogKey` unknown — it is `skip_serializing_if`,
-    /// so an empty one is absent from that serialization — and re-inject a cleared API key
-    /// the operator had just deleted.
-    #[serde(flatten)]
-    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
-
-/// Keys this build knows are RETIRED: dropped from [`Settings::unknown`] on load rather
-/// than carried forward forever. A key that is merely *unknown* is never pruned — this
-/// build cannot tell a new setting from a dead one, and preserving is the safe guess.
-///
-/// - `satDoppler` — the pre-0.26 satellite master switch. Dead as a switch; [`Settings::load`]
-///   reads it straight out of the raw text for the one-time consent migration and nothing else
-///   ever wants it again. Writing it back would also put a live-looking opt-in beside the
-///   per-radio consent that replaced it.
-const RETIRED_KEYS: &[&str] = &["satDoppler"];
 
 /// One phone voice-keyer slot: an F-key-numbered label bound to a recorded WAV. `file`
 /// is empty until the operator records or imports a message into the slot.
@@ -2514,13 +2326,6 @@ pub struct WorkingFreq {
 
 fn default_on() -> bool {
     true
-}
-
-/// 2.5:1 — see [`Settings::swr_stop_threshold`]. Must match the `Default` impl's value: a bare
-/// `#[serde(default)]` would hand an upgrader's older settings file 0.0, and 0.0 is a cutoff
-/// that fires on the first reading of every transmission.
-fn default_swr_stop_threshold() -> f32 {
-    2.5
 }
 
 fn default_tune_timeout() -> u32 {
@@ -3010,31 +2815,24 @@ pub struct RadioProfile {
     /// a DATA submode nor SSB.
     #[serde(default)]
     pub data_modes_plain_ssb: bool,
-    /// **Hold the DATA submode while the SSTV receiver is running** (#130, PA3GYQ; widened to
-    /// HF by #191).
+    /// **Hold the FM DATA submode while the SSTV receiver is running** (#130, PA3GYQ).
     ///
-    /// Default OFF, which is today's behaviour: the DATA submode is commanded only while an
-    /// image is QUEUED OR IN FLIGHT and the plain mode the rest of the time, so a rig parked on
-    /// an SSTV calling channel drops out of the data mode between pictures. That revert is
+    /// Default OFF, which is today's behaviour: [`Engine::fm_mode_word`] commands `PKTFM`
+    /// only while an image is QUEUED OR IN FLIGHT and plain `FM` the rest of the time, so a
+    /// rig parked on an FM SSTV channel drops out of FM-D between pictures. That revert is
     /// deliberate — an SSTV send once keyed a data mode into an FM repeater input — but it is
-    /// wrong for the operator who sits on an SSTV calling channel all evening.
+    /// wrong for the operator who sits on an FM SSTV calling channel all evening.
     ///
     /// ON, the DATA submode is held for as long as `Engine::sstv_armed` is true, i.e. from the
     /// moment the SSTV view starts the receiver until the operator stops it.
     ///
-    /// ⚠️ IT COVERS BOTH CLASSES, AND ONCE DID NOT. Shipped in 1.11.1 read by
-    /// [`Engine::fm_mode_word`] and nothing else, so it held `PKTFM` on an FM channel and did
-    /// nothing whatever on 14 MHz — where most SSTV is worked (#191). Both arms now ask the one
-    /// predicate `Engine::sstv_wants_data_submode`, so the switch means FM-D on an FM channel
-    /// and USB-D/LSB-D on HF.
-    ///
     /// ⚠️ THE COST, AND IT IS THE REASON THIS IS OPT-IN. The receiver stays armed after the
     /// operator leaves the SSTV view (only an explicit Stop, or the ISS LOS unwind, disarms
-    /// it). So with this on, a VOICE call made without stopping the receiver first is commanded
-    /// in the data submode, where a normally-wired rig takes transmit audio from the data port
-    /// and the microphone modulates nothing — the same "red light, no RF" failure
-    /// `data_modes_plain_ssb` exists for, one mode along. Stop the receiver before going back
-    /// to voice; the hint on the switch says so.
+    /// it). So with this on, an FM VOICE call made without stopping the receiver first is
+    /// commanded in the FM data submode, where a normally-wired rig takes transmit audio from
+    /// the data port and the microphone modulates nothing — the same "red light, no RF"
+    /// failure `data_modes_plain_ssb` exists for, one mode along. Stop the receiver before
+    /// going back to voice; the hint on the switch says so.
     ///
     /// PER RADIO, not global, for `data_modes_plain_ssb`'s reason: it is a property of how
     /// THAT rig is cabled and operated. A station can run SSTV on the 9700 and voice on the HF
@@ -3152,8 +2950,7 @@ pub struct RadioProfilePatch {
     /// See `RadioProfile::data_modes_plain_ssb` — plain SSB instead of the DATA submode.
     #[serde(default)]
     pub data_modes_plain_ssb: bool,
-    /// See `RadioProfile::sstv_hold_data_submode` — hold the DATA submode while the SSTV
-    /// receiver runs.
+    /// See `RadioProfile::sstv_hold_data_submode` — hold FM-D while the SSTV receiver runs.
     /// `#[serde(default)]` like its neighbour: a patch written before the field existed still
     /// deserializes, as OFF, which is the pre-field behaviour.
     #[serde(default)]
@@ -3884,7 +3681,15 @@ impl Default for Settings {
             // operators can blank this. (NOTE: dxc.nc7j.com:7373 is NC7J's *skimmer* port,
             // not its human port — don't use it here; the migration in `load` fixes it.)
             cluster_host: "ve7cc.net:23".to_string(),
-            cluster_hosts: DEFAULT_CLUSTER_HOSTS.map(str::to_string).to_vec(),
+            // The aggregator seeds with TWO diverse-port nodes: ve7cc on the standard telnet
+            // port 23, plus wa9pie on 8000 — a firewall-friendly fallback, since some
+            // networks/ISPs block outbound port 23 (which would silently kill phone while RBN
+            // on 7000/7001 keeps working). The operator adds more in Settings ▸ Connections.
+            // (RBN endpoints don't belong here — they're auto-wired; `load` strips any.)
+            cluster_hosts: vec![
+                "ve7cc.net:23".to_string(),
+                "dxc.wa9pie.net:8000".to_string(),
+            ],
             // APRS-IS is OFF until the operator asks for it: it is an outbound connection to a
             // public service under their callsign, which is theirs to opt into. The uplink is a
             // second, separate opt-in for the same reason, doubly so — it publishes.
@@ -3914,8 +3719,6 @@ impl Default for Settings {
             monitor_level: 0.5,
             station_power_w: None,
             units: default_units(),
-            swr_stop_enabled: false,
-            swr_stop_threshold: 2.5,
             max_power_phone: None,
             max_power_cw: None,
             max_power_digital: None,
@@ -3969,7 +3772,6 @@ impl Default for Settings {
             sstv_rx_auto_arm: true,
             sstv_default_tx_mode: default_sstv_default_tx_mode(),
             sstv_tx_power_pct: None,
-            sstv_tx_fsk_id: false,
             psk_rx_auto_arm: true,
             rtty_rx_auto_arm: true,
             alert_my_call: true,
@@ -4026,8 +3828,6 @@ impl Default for Settings {
             opening_regional: true,
             macros: Macros::default(),
             voice_messages: default_voice_messages(),
-            // A fresh install has no file, so nothing unknown to carry.
-            unknown: serde_json::Map::new(),
         }
     }
 }
@@ -4643,14 +4443,6 @@ impl Settings {
                 }
             },
         };
-        // Keys this build has no field for were just captured by `Settings::unknown` so a
-        // save cannot write them out of existence (see that field). Prune the ones this
-        // build knows are RETIRED — everything else is carried forward, because "unknown"
-        // and "dead" are not distinguishable from here. Runs before the migrations below so
-        // a retired key can never be read back out of the catch-all as if it were live.
-        for key in RETIRED_KEYS {
-            s.unknown.remove(*key);
-        }
         // One-time migration: drop the known-bad free-text "CQ"/"CQ CQ" macro chips that
         // persisted from older defaults. A CQ now goes through the structured Call-CQ
         // button; a free-text "CQ CQ" chip went out as a chunked, gridless "DE <CALL>
@@ -4706,7 +4498,10 @@ impl Settings {
                 .iter()
                 .any(|h| !h.trim().is_empty() && !h.contains("reversebeacon.net"));
             if !has_human_host {
-                s.cluster_hosts = DEFAULT_CLUSTER_HOSTS.map(str::to_string).to_vec();
+                s.cluster_hosts = vec![
+                    "ve7cc.net:23".to_string(),
+                    "dxc.wa9pie.net:8000".to_string(),
+                ];
             }
         }
         // Migration: `cluster_hosts` (the multi-cluster aggregator) is newer than the single
@@ -4728,20 +4523,6 @@ impl Settings {
                     && seen.insert(h.to_ascii_lowercase())
             })
             .collect();
-        // Migration (2026-09-16): the default list was the ve7cc + wa9pie PAIR, and both died
-        // on the same day — every default-config install lost its only SSB/phone sources at
-        // once. A list that is still exactly that pair is the shipped default, not a choice,
-        // so it gains the nodes added since; any other list is the operator's and is kept.
-        let shipped_pair = &DEFAULT_CLUSTER_HOSTS[..2];
-        if s.cluster_hosts.len() == shipped_pair.len()
-            && s.cluster_hosts
-                .iter()
-                .zip(shipped_pair)
-                .all(|(h, d)| h.eq_ignore_ascii_case(d))
-        {
-            s.cluster_hosts
-                .extend(DEFAULT_CLUSTER_HOSTS[2..].iter().map(|h| h.to_string()));
-        }
         // Migration: SATELLITE UPLINK CONSENT (0.26). A file with no
         // `satUplinkRadios` key predates per-radio confirmation. Its mapping
         // was only ever a live uplink grant when the retired `satDoppler`
@@ -4817,47 +4598,14 @@ impl Settings {
         s
     }
 
-    /// The scratch path [`save`](Self::save) writes before renaming it onto `path`.
-    ///
-    /// **Per-PROCESS, never a fixed `settings.json.tmp`** — the [`tempo_core::logbook`] shape.
-    /// The operator runs a tester build beside the public release against the same data
-    /// directory, so two instances can each be mid-save at the same instant; on one shared
-    /// scratch path their two `write_all`s interleave into ONE file and the rename publishes
-    /// the mixture. A mixed settings.json does not read as half a config — it is invalid JSON,
-    /// so the next load takes the `.corrupt` path and starts from defaults, blanking the
-    /// operator's identity and rig config and resetting `license_class` to `Open` (which drops
-    /// the Part 97 TX lockout). With a scratch path each, the only thing the two instances
-    /// share is the rename, which is atomic: last writer wins the whole file, intact.
-    ///
-    /// `pub` for the tests that simulate a failing save by BLOCKING this path (a directory
-    /// cannot be overwritten by a write). A literal `settings.json.tmp` in such a test blocks
-    /// nothing now, so the save succeeds and the test passes while asserting the opposite of
-    /// what it says — which is exactly what two of them did when the name became per-process.
-    pub fn tmp_path(path: &Path) -> std::path::PathBuf {
-        path.with_extension(format!("json.{}.tmp", std::process::id()))
-    }
-
-    /// Persist settings to `path` (creating parent directories). Writes a per-process
-    /// sibling `.tmp` file, fsyncs it, then renames it into place (the [`Logbook::save`]
+    /// Persist settings to `path` (creating parent directories). Writes a sibling
+    /// `.tmp` file, fsyncs it, then renames it into place (the [`Logbook::save`]
     /// pattern), so a crash / power loss mid-write can't truncate `settings.json`. A
     /// torn write of the live file would silently collapse to [`Settings::default`] on
     /// the next load — blanking the operator's identity/rig config and resetting
     /// `license_class` to `Open`, which drops the Part 97 TX lockout. The rename makes
     /// a save all-or-nothing; the fsync stops a filesystem from committing the rename
     /// before the tmp's data blocks on power loss (which would publish a torn file).
-    ///
-    /// # Two instances saving at once
-    ///
-    /// LAST WRITER WINS THE WHOLE FILE, and that is the deliberate choice. Each save is a
-    /// complete, self-consistent configuration; the loser's save is simply superseded, and
-    /// the operator sees the settings of whichever instance saved last. Anything stronger —
-    /// a lock file, or a compare-and-swap on the file's mtime — buys ordering between two
-    /// instances the operator is driving one at a time anyway, and costs a failure mode that
-    /// is strictly worse than losing a redundant save: a lock file outlives a crash, and a
-    /// save that REFUSES leaves the operator's change only in memory, where the next thing
-    /// to happen is that it evaporates. The erasure this all exists to stop was never a race
-    /// — it was an older build dropping fields it did not understand at load
-    /// ([`Settings::unknown`]), which no amount of write ordering would have changed.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -4867,7 +4615,7 @@ impl Settings {
         let mut to_save = self.clone();
         to_save.sync_active_from_flat();
         let json = serde_json::to_string_pretty(&to_save).map_err(std::io::Error::other)?;
-        let tmp = Self::tmp_path(path);
+        let tmp = path.with_extension("json.tmp");
         // ⛔ Owner-only. settings.json holds the ClubLog API key (and a Cloudlog key until the
         // keychain migration completes) and sits beside conn-health.json; `File::create` leaves it
         // world-readable at 0644 (round 7 F8). Create the temp 0600 from the first byte on unix, and
@@ -4895,21 +4643,7 @@ impl Settings {
         drop(f);
         // No pre-remove of `path`: rename replaces it atomically on Unix and Windows
         // (MOVEFILE_REPLACE_EXISTING); a remove-first would open a no-file crash window.
-        std::fs::rename(&tmp, path)?;
-        // …and fsync the DIRECTORY, so the rename itself survives a power loss. The fsync
-        // above makes the tmp's CONTENT durable; on ext4/xfs the directory entry that
-        // publishes it is a separate transaction, so without this the machine can come back
-        // with the pre-save file and a save the operator watched succeed. Best-effort, and
-        // deliberately so: it is a durability upgrade on a save that has already succeeded,
-        // and some filesystems (and every Windows path — there is no directory handle to
-        // sync) refuse the open outright. Failing the save over it would be a regression.
-        #[cfg(unix)]
-        if let Some(dir) = path.parent() {
-            if let Ok(d) = std::fs::File::open(dir) {
-                let _ = d.sync_all();
-            }
-        }
-        Ok(())
+        std::fs::rename(&tmp, path)
     }
 
     /// Dial frequency in Hz (for the rig / PSK Reporter).
@@ -4933,7 +4667,22 @@ impl Settings {
         if self.rptr_offset_override_hz > 0 {
             return self.rptr_offset_override_hz;
         }
-        rptr_offset_for_dial(self.dial_mhz)
+        let f = self.dial_mhz;
+        if f >= 1240.0 {
+            12_000_000
+        } else if f >= 420.0 {
+            5_000_000
+        } else if f >= 222.0 {
+            1_600_000
+        } else if f >= 144.0 {
+            600_000
+        } else if f >= 50.0 {
+            1_000_000
+        } else if f >= 28.0 {
+            100_000
+        } else {
+            0
+        }
     }
 
     /// The RF-power ceiling (0.0–1.0) for the CURRENT operating mode, or 1.0 (uncapped) when the
@@ -4951,37 +4700,6 @@ impl Settings {
             }
         };
         cap.map(|c| c.clamp(0.0, 1.0)).unwrap_or(1.0)
-    }
-
-    /// Is the ACTIVE radio's SWR reading one Nexus can put a number to?
-    /// [`swr_scale_verified`] over the flat mirror of the active profile.
-    pub fn swr_scale_is_verified(&self) -> bool {
-        swr_scale_verified(
-            self.rig_model,
-            &self.rig_conn,
-            &self.rig_addr,
-            self.icom_native_cat,
-        )
-    }
-
-    /// The SWR ratio the cutoff actually uses, or `None` when the cutoff is not in force —
-    /// switched off, or on a radio whose scale is not verified.
-    ///
-    /// ⚠️ CLAMPED HERE, THE `rf_power_ceiling` SHAPE. `settings.json` is an ordinary file an
-    /// operator can edit, and this value gates an automatic unkey: a 0.0 or a negative would
-    /// halt every transmission on its first SWR reading, and a NaN compares false against
-    /// everything, silently disabling a safety switch that reads as on. The floor is 1.0
-    /// because an SWR below 1:1 does not exist, so nothing sane can ask for one.
-    pub fn swr_stop_ratio(&self) -> Option<f32> {
-        if !self.swr_stop_enabled || !self.swr_scale_is_verified() {
-            return None;
-        }
-        let t = self.swr_stop_threshold;
-        Some(if t.is_finite() {
-            t.clamp(1.0, 99.0)
-        } else {
-            default_swr_stop_threshold()
-        })
     }
 
     /// The ceiling for a HIGH-DUTY transmission, whatever operating mode is nominally selected.
@@ -5216,23 +4934,6 @@ impl Settings {
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
-
-    /// A scratch settings directory no CONCURRENT test process can reach.
-    ///
-    /// These tests used fixed `$TMPDIR/tempo_settings_<label>` paths and several
-    /// `remove_dir_all` them. Nothing in one process collides — the labels are
-    /// distinct — but several agents run `cargo test` at once from different
-    /// worktrees on this machine, and those runs share one `$TMPDIR`: one run's
-    /// setup deleted another run's fixture mid-test, so the failure surfaced in
-    /// whichever process lost the race and reproduced for neither.
-    ///
-    /// The pid salt is the fix already used by
-    /// `load_promotes_only_a_live_legacy_pair_to_uplink_consent` below; this is
-    /// that idiom, named once. Pure path arithmetic — no filesystem side effect,
-    /// so each caller keeps whatever create/remove/chmod dance it needs.
-    fn scratch_dir(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("tempo_settings_{label}_{}", std::process::id()))
-    }
 
     /// ⭐⭐ **The link that makes §2.5's every-sent-slot-has-a-source rule real.**
     ///
@@ -6142,7 +5843,7 @@ mod tests {
     /// than as anything the container-level `#[serde(default)]` might be talked into.
     #[test]
     fn reverse_cw_round_trips_and_a_pre_field_settings_file_loads_it_off() {
-        let dir = scratch_dir("cw_reverse");
+        let dir = std::env::temp_dir().join("tempo_settings_cw_reverse");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
 
@@ -7398,7 +7099,7 @@ mod tests {
         assert_eq!(s.dial_hz(), 14_074_000); // default = FT8 20 m (the default mode)
     }
 
-    /// The SSTV section's four fields, on the exact wire keys the UI hand-writes.
+    /// The SSTV section's three fields, on the exact wire keys the UI hand-writes.
     ///
     /// All three carry an interior two-letter acronym, which is the `decodeFlowHz` /
     /// `decodeFLowHz` shape: a TS key written `sstvRXAutoArm` or `sstvTXPowerPct`
@@ -7417,18 +7118,12 @@ mod tests {
             s.sstv_tx_power_pct, None,
             "None = never touch the operator's power"
         );
-        assert!(
-            !s.sstv_tx_fsk_id,
-            "the callsign burst is a TRANSMIT-PATH change and ships OFF — an upgrade \
-             must not lengthen anyone's over"
-        );
 
         let json = serde_json::to_string(&s).unwrap();
         for key in [
             "\"sstvRxAutoArm\":true",
             "\"sstvDefaultTxMode\":\"auto\"",
             "\"sstvTxPowerPct\":null",
-            "\"sstvTxFskId\":false",
         ] {
             assert!(json.contains(key), "missing wire key {key} in {json}");
         }
@@ -7439,24 +7134,16 @@ mod tests {
         assert!(old.sstv_rx_auto_arm);
         assert_eq!(old.sstv_default_tx_mode, "auto");
         assert_eq!(old.sstv_tx_power_pct, None);
-        assert!(
-            !old.sstv_tx_fsk_id,
-            "an upgrader's file predates the key and their transmission must not grow"
-        );
 
         // …and an explicit opt-out survives the round trip (the other direction of the
         // same gate — a `default_true` that ignored the file would pass the line above).
         let off: Settings = serde_json::from_str(
-            r#"{"sstvRxAutoArm":false,"sstvDefaultTxMode":"martin1","sstvTxPowerPct":40,"sstvTxFskId":true}"#,
+            r#"{"sstvRxAutoArm":false,"sstvDefaultTxMode":"martin1","sstvTxPowerPct":40}"#,
         )
         .unwrap();
         assert!(!off.sstv_rx_auto_arm);
         assert_eq!(off.sstv_default_tx_mode, "martin1");
         assert_eq!(off.sstv_tx_power_pct, Some(40));
-        assert!(
-            off.sstv_tx_fsk_id,
-            "an operator who switched it on keeps it on"
-        );
     }
 
     /// The PSK section's one field, on the exact wire key the UI hand-writes —
@@ -7595,101 +7282,6 @@ mod tests {
             !body.lines().any(|l| l.trim_start().starts_with("js8HbOn:"))
                 && !body.lines().any(|l| l.trim_start().starts_with("js8CqOn:")),
             "HB and CQ-repeat on/off are session-only and must never be settings"
-        );
-    }
-
-    /// The high-SWR cutoff's two fields — defaults, the exact camelCase wire keys, an
-    /// upgrader's file, the read-time clamp, and the TS mirror read out of `types.ts` itself.
-    ///
-    /// ⚠️ `swrStopEnabled` / `swrStopThreshold`, NOT `SWRStop…`. The interior-acronym trap the
-    /// SSTV test above documents is live here: a hand-written `maxSWR` on one side compiles
-    /// clean on both and the control silently does nothing while the backend keeps the default
-    /// — and this particular default is a safety switch the operator believes they turned on.
-    #[test]
-    fn swr_stop_defaults_wire_keys_clamp_and_ts_mirror() {
-        let s = Settings::default();
-        assert!(!s.swr_stop_enabled, "ships OFF — the operator's ruling");
-        assert_eq!(s.swr_stop_threshold, 2.5);
-
-        let json = serde_json::to_string(&s).unwrap();
-        for key in ["\"swrStopEnabled\":false", "\"swrStopThreshold\":2.5"] {
-            assert!(json.contains(key), "missing wire key {key} in {json}");
-        }
-        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
-
-        // An upgrader's file predates both keys. The threshold in particular MUST NOT come
-        // back 0.0 — that is a cutoff that fires on the first reading of every transmission,
-        // which is why the field carries `default = "default_swr_stop_threshold"` rather than
-        // a bare `#[serde(default)]`.
-        let old: Settings = serde_json::from_str(r#"{"mycall":"W9XYZ"}"#).unwrap();
-        assert!(!old.swr_stop_enabled);
-        assert_eq!(old.swr_stop_threshold, 2.5);
-
-        // On a rig with no verified scale the cutoff is not in force whatever the file says —
-        // both halves, so neither alone can carry the assertion.
-        let mut on: Settings =
-            serde_json::from_str(r#"{"swrStopEnabled":true,"swrStopThreshold":3.0}"#).unwrap();
-        assert!(on.swr_stop_enabled);
-        assert_eq!(
-            on.swr_stop_ratio(),
-            None,
-            "a default profile is a plain rigctld rig — no verified scale, no cutoff"
-        );
-        on.rig_model = 3081; // IC-9700
-        on.rig_conn = "serial".into();
-        on.icom_native_cat = true;
-        assert_eq!(
-            on.swr_stop_ratio(),
-            Some(3.0),
-            "native CI-V IC-9700 qualifies"
-        );
-        on.swr_stop_enabled = false;
-        assert_eq!(on.swr_stop_ratio(), None, "…and the switch still rules");
-
-        // The read-time clamp, both directions of wrong.
-        let mut edited = on.clone();
-        edited.swr_stop_enabled = true;
-        edited.swr_stop_threshold = 0.0;
-        assert_eq!(edited.swr_stop_ratio(), Some(1.0), "floored at 1:1");
-        edited.swr_stop_threshold = f32::NAN;
-        assert_eq!(
-            edited.swr_stop_ratio(),
-            Some(2.5),
-            "a NaN falls back to the default — it must not silently disable the cutoff"
-        );
-
-        // Flex over the network is the other verified path.
-        let mut flex = Settings::default();
-        flex.swr_stop_enabled = true;
-        flex.rig_model = 2036;
-        flex.rig_conn = "network".into();
-        flex.rig_addr = "192.0.2.50:4992".into();
-        assert_eq!(flex.swr_stop_ratio(), Some(2.5));
-        // CONTROL: the same Flex WITHOUT an address is not a network transport at all.
-        flex.rig_addr.clear();
-        assert_eq!(flex.swr_stop_ratio(), None);
-
-        // The TS mirror, read from types.ts itself.
-        let ts = include_str!("../../../ui/src/types.ts");
-        let head = "export interface Settings {";
-        let start = ts.find(head).expect("the UI declares Settings") + head.len();
-        let body = &ts[start..];
-        let body = &body[..body.find("\n}").expect("the interface is closed")];
-        // `key:` or `key?:` — both fields are optional in TS, like every settings field
-        // added since the interface stopped being exhaustive.
-        let declares = |key: &str| {
-            body.lines().any(|l| {
-                let l = l.trim_start();
-                l.starts_with(&format!("{key}:")) || l.starts_with(&format!("{key}?:"))
-            })
-        };
-        for key in ["swrStopEnabled", "swrStopThreshold"] {
-            assert!(declares(key), "ui/src/types.ts Settings is missing `{key}`");
-        }
-        // CONTROL: the acronym-cased spellings must NOT be there, so the scan is not vacuous.
-        assert!(
-            !declares("swrStop") && !declares("maxSWR") && !declares("swrStopEnabledd"),
-            "the scan finds only what is really declared"
         );
     }
 
@@ -7837,7 +7429,9 @@ mod tests {
         assert_eq!(s.fd_join_addr, "");
         assert_eq!(s.fd_position_id, "");
 
-        let path = scratch_dir("fdsync").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_fdsync")
+            .join("settings.json");
         let s = Settings {
             fd_host_enable: true,
             fd_host_port: 42111,
@@ -7867,7 +7461,9 @@ mod tests {
         assert!(!s.fd_scoreboard, "an upgrade never turns the board on");
         assert_eq!(s.fd_scoreboard_port, 7373);
 
-        let path = scratch_dir("fdboard").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_fdboard")
+            .join("settings.json");
         let s = Settings {
             fd_scoreboard: true,
             fd_scoreboard_port: 7474,
@@ -8030,7 +7626,7 @@ mod tests {
     #[cfg(unix)]
     fn save_writes_the_settings_file_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = scratch_dir("mode");
+        let dir = std::env::temp_dir().join("tempo_settings_mode");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
         let s = Settings {
@@ -8148,7 +7744,9 @@ mod tests {
 
     #[test]
     fn save_then_load() {
-        let path = scratch_dir("test2").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_test2")
+            .join("settings.json");
         let s = Settings {
             mycall: "W9XYZ".into(),
             serial_port: "/dev/ttyUSB0".into(),
@@ -8168,7 +7766,7 @@ mod tests {
         // save() writes a sibling `.tmp` then renames it onto the target, so a save is
         // all-or-nothing (a crash mid-write can't truncate the live file). After a
         // successful save the temp file must be gone (renamed into place).
-        let dir = scratch_dir("atomic");
+        let dir = std::env::temp_dir().join("tempo_settings_atomic");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
         let s = Settings {
@@ -8177,193 +7775,11 @@ mod tests {
         };
         s.save(&path).unwrap();
         assert!(path.exists(), "settings.json written");
-        // Nothing left behind under ANY scratch name — the name is per-process now
-        // (`Settings::tmp_path`), so a check pinned to the old fixed `settings.json.tmp`
-        // would pass while a real leftover sat beside it.
-        let leftovers: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".tmp"))
-            .collect();
         assert!(
-            leftovers.is_empty(),
-            "temp file renamed away, none left behind: {leftovers:?}"
+            !path.with_extension("json.tmp").exists(),
+            "temp file renamed away, none left behind"
         );
         assert_eq!(Settings::load(&path).mycall, "W9XYZ");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A unique scratch directory under the OS temp dir — no external tempfile crate, and
-    /// no fixed name: two test processes (two worktrees, or a `--jobs` split) that shared a
-    /// directory here would `remove_dir_all` each other's fixtures mid-run.
-    fn scratch_dir_ready(tag: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static N: AtomicU32 = AtomicU32::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("tempo_settings_{tag}_{}_{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir
-    }
-
-    /// THE DATA-LOSS REGRESSION (the operator runs a tester build beside the public release
-    /// against the SAME data directory). A newer build writes a `settings.json` carrying keys
-    /// an older build has never heard of; the older build's whole-struct save then writes them
-    /// out of existence, silently, with no error and nothing on screen to say it happened.
-    ///
-    /// The fix is that unknown keys survive a load → save round trip untouched. This test is
-    /// the proof, and it FAILED before the `Settings::unknown` catch-all existed.
-    #[test]
-    fn keys_from_a_newer_build_survive_an_older_builds_load_and_save() {
-        let dir = scratch_dir_ready("unknown_keys");
-        let path = dir.join("settings.json");
-        // A settings.json as a NEWER build would have written it: everything this build
-        // knows, plus three keys it does not — a scalar, a nested object and an array.
-        let mut file = serde_json::to_value(Settings::default()).expect("serialises");
-        let obj = file.as_object_mut().expect("a struct is an object");
-        obj.insert("mycall".into(), serde_json::json!("KD9TAW"));
-        obj.insert("futureKnobHz".into(), serde_json::json!(1234));
-        obj.insert(
-            "futureProfile".into(),
-            serde_json::json!({"host": "10.0.0.7", "slots": [1, 2, 3]}),
-        );
-        obj.insert("futureList".into(), serde_json::json!(["a", "b"]));
-        // …and the one key this build knows is RETIRED, which is the positive control below.
-        obj.insert("satDoppler".into(), serde_json::json!(true));
-        std::fs::write(&path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
-
-        let s = Settings::load(&path);
-        assert_eq!(s.mycall, "KD9TAW", "control: a KNOWN field still loads");
-        s.save(&path).expect("saves");
-
-        let back: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let back = back.as_object().expect("an object");
-        for (key, want) in [
-            ("futureKnobHz", serde_json::json!(1234)),
-            (
-                "futureProfile",
-                serde_json::json!({"host": "10.0.0.7", "slots": [1, 2, 3]}),
-            ),
-            ("futureList", serde_json::json!(["a", "b"])),
-        ] {
-            assert_eq!(
-                back.get(key),
-                Some(&want),
-                "{key} was written out of existence by an older build's save — this is the \
-                 erasure: {:?}",
-                back.keys().collect::<Vec<_>>()
-            );
-        }
-        // POSITIVE CONTROL. The same lookup MUST report a key that really was dropped, or the
-        // three assertions above prove nothing. `satDoppler` is retired (see RETIRED_KEYS):
-        // this build deliberately does not carry it forward, and the check sees that.
-        assert_eq!(
-            back.get("satDoppler"),
-            None,
-            "the control key must be ABSENT, or this check cannot fail"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// `#[serde(flatten)]` on `Settings::unknown` changes HOW the whole struct is
-    /// deserialized: serde buffers the object and replays it, instead of driving
-    /// serde_json's parser field by field. That replay is where a coercion serde_json does
-    /// natively could quietly stop happening — and a `Settings` that stops parsing is not a
-    /// lost field, it is [`Settings::load`]'s `.corrupt` path: the whole file set aside, the
-    /// operator's identity and rig config blanked, and `license_class` reset to `Open`,
-    /// which drops the Part 97 TX lockout.
-    ///
-    /// So: a hand-edited or older-build `settings.json` whose numeric fields are written as
-    /// bare integers (`"dialMhz": 14`, not `14.0` — what every JSON writer emits for a whole
-    /// number) must still load, and the enums, options and nested structs with it.
-    #[test]
-    fn the_catch_all_did_not_change_how_an_ordinary_settings_file_parses() {
-        let file = serde_json::json!({
-            "mycall": "KD9TAW",
-            "dialMhz": 14,                 // integer where the field is f64
-            "ctcssToneHz": 100,            // integer where the field is f32
-            "txLevel": 1,                  // ditto
-            "licenseClass": "general",     // enum
-            "operatingMode": "cw",         // enum
-            "cqMaxCalls": 4,               // Option<u32>
-            "maxPowerAm": 25,              // Option<f32> as an integer
-            "macros": {"band": ["73"], "chat": []},   // nested struct
-            "radios": [{"id": 0, "name": "FTDX10"}],  // nested struct in a Vec
-        });
-        let s: Settings =
-            serde_json::from_value(file).expect("an ordinary settings.json still parses");
-        assert_eq!(s.mycall, "KD9TAW");
-        assert!((s.dial_mhz - 14.0).abs() < f64::EPSILON, "integer → f64");
-        assert!(
-            (s.ctcss_tone_hz - 100.0).abs() < f32::EPSILON,
-            "integer → f32"
-        );
-        assert!((s.tx_level - 1.0).abs() < f32::EPSILON);
-        assert_eq!(s.license_class, LicenseClass::General);
-        assert_eq!(s.operating_mode, OperatingMode::Cw);
-        assert_eq!(s.cq_max_calls, Some(4));
-        assert_eq!(s.max_power_am, Some(25.0));
-        assert_eq!(s.macros.band, vec!["73".to_string()]);
-        assert_eq!(s.radios.len(), 1);
-        assert_eq!(s.radios[0].name, "FTDX10");
-        // …and a field the file omitted still takes its own default, not a zero.
-        assert_eq!(s.q65_period_s, default_q65_period_s());
-        assert!(
-            s.cat_broker_ptt,
-            "a `default = ...` field kept its true default"
-        );
-        // POSITIVE CONTROL. A parse that cannot fail proves nothing: a value of the WRONG
-        // SHAPE must still be rejected, which is what makes `.corrupt` reachable at all.
-        assert!(
-            serde_json::from_value::<Settings>(serde_json::json!({"dialMhz": "fourteen"})).is_err(),
-            "a type error must still be an error"
-        );
-    }
-
-    /// The other half of the round trip: a key preserved this way must survive REPEATEDLY
-    /// (an operator opens the older build many times), and must not be able to shadow or
-    /// resurrect a real setting the operator changed in the older build.
-    #[test]
-    fn preserved_unknown_keys_are_stable_and_never_shadow_a_real_setting() {
-        let dir = scratch_dir_ready("unknown_stable");
-        let path = dir.join("settings.json");
-        let mut file = serde_json::to_value(Settings::default()).expect("serialises");
-        let obj = file.as_object_mut().expect("an object");
-        obj.insert("mycall".into(), serde_json::json!("KD9TAW"));
-        obj.insert("futureKnobHz".into(), serde_json::json!(1234));
-        std::fs::write(&path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
-
-        // Five ordinary open-change-close cycles in the older build.
-        for i in 0..5 {
-            let mut s = Settings::load(&path);
-            s.op_name = format!("cycle{i}");
-            s.save(&path).expect("saves");
-        }
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let back: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw).unwrap();
-        assert_eq!(
-            back.get("futureKnobHz"),
-            Some(&serde_json::json!(1234)),
-            "the newer build's key survived five cycles"
-        );
-        assert_eq!(
-            raw.matches("\"futureKnobHz\"").count(),
-            1,
-            "written exactly once — a catch-all that also emitted a duplicate key would make \
-             the file ambiguous to the build that owns the field"
-        );
-        let s = Settings::load(&path);
-        assert_eq!(
-            s.op_name, "cycle4",
-            "the older build's own edit is what stuck"
-        );
-        assert_eq!(
-            s.mycall, "KD9TAW",
-            "and the newer build's KNOWN fields are unharmed"
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8374,7 +7790,7 @@ mod tests {
         // rename, so settings.json is untouched — the operator's callsign, license_class
         // (the Part 97 TX lockout), and rig config survive instead of collapsing to
         // Settings::default() (license = Open → lockout removed) on the next load.
-        let dir = scratch_dir("torn");
+        let dir = std::env::temp_dir().join("tempo_settings_torn");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
         let good = Settings {
@@ -8385,10 +7801,8 @@ mod tests {
         };
         good.save(&path).unwrap();
         // Block the sibling temp path (a directory can't be overwritten by write()), a
-        // stand-in for a torn write / full disk / power loss at the write-tmp step. The
-        // name comes from `Settings::tmp_path`, not a literal: it is per-process now, and a
-        // literal here would block nothing and let this test pass on a save that succeeded.
-        let tmp = Settings::tmp_path(&path);
+        // stand-in for a torn write / full disk / power loss at the write-tmp step.
+        let tmp = path.with_extension("json.tmp");
         std::fs::create_dir_all(&tmp).unwrap();
         let doomed = Settings {
             mycall: "OTHER".into(),
@@ -8420,7 +7834,7 @@ mod tests {
         // operator's callsign/rig config, and resets license_class to Open (re-opening
         // TX privileges). load() must set the bad file aside as a sibling `.corrupt`
         // file so the operator (or support) can recover it, then fall back to defaults.
-        let dir = scratch_dir("corrupt");
+        let dir = std::env::temp_dir().join("tempo_settings_corrupt");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
         let good = Settings {
@@ -8458,7 +7872,7 @@ mod tests {
         // corrupt case. (unix-only: permission bits don't model a Windows lock,
         // but they exercise the same read-Err arm.)
         use std::os::unix::fs::PermissionsExt;
-        let dir = scratch_dir("unreadable");
+        let dir = std::env::temp_dir().join("tempo_settings_unreadable");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("settings.json");
         let good = Settings {
@@ -8481,7 +7895,9 @@ mod tests {
 
     #[test]
     fn load_drops_stale_cq_macros_but_keeps_custom() {
-        let path = scratch_dir("cqmacro").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_cqmacro")
+            .join("settings.json");
         let mut s = Settings::default();
         s.macros.band = vec!["CQ CQ".into(), "QRZ?".into(), "73 to all".into()];
         s.macros.chat = vec!["73".into(), "CQ".into(), "QSL".into()];
@@ -8603,7 +8019,9 @@ mod tests {
 
     #[test]
     fn load_migrates_legacy_cw_into_a_default_profile() {
-        let path = scratch_dir("cwprofiles").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_cwprofiles")
+            .join("settings.json");
         let mut s = Settings::default();
         s.macros.cw_profiles.clear(); // force the legacy (unmigrated) shape
         s.macros.active_cw_profile = 0;
@@ -8624,7 +8042,9 @@ mod tests {
 
     #[test]
     fn cw_profiles_survive_a_settings_round_trip() {
-        let path = scratch_dir("cwprofile_rt").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_cwprofile_rt")
+            .join("settings.json");
         let mut s = Settings::default();
         s.macros.cw_profiles = vec![
             CwMacroProfile {
@@ -8664,7 +8084,9 @@ mod tests {
         // cluster_host used to BE the RBN endpoint (digital-only) — that's why CW/Phone
         // needs never appeared. RBN is now wired automatically; an old RBN value must
         // migrate to a human node so SSB/phone spots start flowing.
-        let path = scratch_dir("clustermig").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_clustermig")
+            .join("settings.json");
         let mut s = Settings::default();
         s.cluster_host = "telnet.reversebeacon.net:7001".into();
         s.save(&path).unwrap();
@@ -8686,7 +8108,9 @@ mod tests {
         // An upgrading config has a single cluster_host but an empty cluster_hosts list
         // (the field is new); load must seed the aggregator from the legacy host so the
         // operator's node isn't lost.
-        let path = scratch_dir("hostsmig").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_hostsmig")
+            .join("settings.json");
         let mut s = Settings::default();
         s.cluster_hosts = vec![]; // simulate a pre-aggregator config
         s.cluster_host = "dxc.example.net:7300".into();
@@ -8700,7 +8124,9 @@ mod tests {
     fn load_sanitizes_cluster_hosts_list() {
         // The aggregator list must never contain RBN endpoints (auto-wired), blanks, or
         // dups — load strips them, preserving order and the first occurrence.
-        let path = scratch_dir("hostssan").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_hostssan")
+            .join("settings.json");
         let mut s = Settings::default();
         s.cluster_hosts = vec![
             " ve7cc.net:23 ".into(),                // trimmed
@@ -8728,7 +8154,9 @@ mod tests {
         // whole subsystem left DISABLED. Load must rewrite the host to a human node, RE-ENABLE
         // the cluster, and seed both default human nodes (incl. the port-23 fallback) so phone
         // flows — otherwise fixing the host alone leaves the operator with no spots at all.
-        let path = scratch_dir("legacyrbn").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_legacyrbn")
+            .join("settings.json");
         let mut s = Settings::default();
         s.cluster_enabled = false;
         s.cluster_host = "telnet.reversebeacon.net:7001".into();
@@ -8755,65 +8183,13 @@ mod tests {
     }
 
     #[test]
-    fn load_adds_the_new_default_nodes_to_the_shipped_pair() {
-        // 2026-09-16: "no SSB spots any more" from several operators at once. Both shipped
-        // human nodes were dead the same day — ve7cc.net:23 accepted TCP and never sent a
-        // login prompt, dxc.wa9pie.net:8000 refused — and every default-config install holds
-        // exactly that pair, so every one of them had zero phone sources. More nodes, on more
-        // than one port, make the default survive that; an upgrading operator only gets them
-        // when the list is STILL the shipped pair, so a curated list is never touched.
-        let path = scratch_dir("thirdnode").join("settings.json");
-        let mut s = Settings::default();
-        s.cluster_hosts = vec!["ve7cc.net:23".into(), "dxc.wa9pie.net:8000".into()];
-        s.save(&path).unwrap();
-        let back = Settings::load(&path);
-        assert_eq!(
-            back.cluster_hosts,
-            vec![
-                "ve7cc.net:23".to_string(),
-                "dxc.wa9pie.net:8000".to_string(),
-                "dx.w1nr.net:23".to_string(),
-                "dxspots.com:7300".to_string(),
-            ],
-            "the shipped pair gains the nodes added since"
-        );
-        assert_eq!(
-            Settings::default().cluster_hosts,
-            back.cluster_hosts,
-            "a migrated pair and a fresh install end up with the same list"
-        );
-        // Port diversity is the point: a port-23-blocked network must be left with more than
-        // one nominal source, or one outage single-sources it again.
-        let non_23 = DEFAULT_CLUSTER_HOSTS
-            .iter()
-            .filter(|h| !h.ends_with(":23"))
-            .count();
-        assert!(
-            non_23 >= 2,
-            "at least two default nodes off port 23, got {non_23}"
-        );
-        // The CONTROL: a list the operator curated is not the shipped pair and stays as it is.
-        let mut s = Settings::default();
-        s.cluster_hosts = vec!["ve7cc.net:23".into(), "dxc.example.net:7300".into()];
-        s.save(&path).unwrap();
-        let back = Settings::load(&path);
-        assert_eq!(
-            back.cluster_hosts,
-            vec![
-                "ve7cc.net:23".to_string(),
-                "dxc.example.net:7300".to_string()
-            ],
-            "a curated list is left alone"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn load_leaves_a_deliberately_disabled_modern_config_alone() {
         // Guard the migration's scope: a MODERN config (human host, no RBN signature) that the
         // operator deliberately disabled must stay disabled — the re-enable is only for the
         // legacy RBN-host signature, never a blanket override of the operator's choice.
-        let path = scratch_dir("moderndisabled").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_moderndisabled")
+            .join("settings.json");
         let mut s = Settings::default();
         s.cluster_enabled = false;
         s.cluster_host = "ve7cc.net:23".into();
@@ -8831,7 +8207,9 @@ mod tests {
     fn migrates_a_flat_config_to_a_single_radio_profile() {
         // An older settings.json (no `radios`) loads as exactly one profile mirroring the flat
         // rig/audio fields; the flat fields stay identical (single-radio behavior unchanged).
-        let path = scratch_dir("radiomigrate").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_radiomigrate")
+            .join("settings.json");
         let mut legacy = Settings::default();
         legacy.rig_model = 1042;
         legacy.rig_model_name = "Yaesu FTDX10".into();
@@ -8861,7 +8239,9 @@ mod tests {
     fn save_mirrors_a_flat_edit_into_the_active_profile() {
         // The mirror invariant: editing the flat rig fields (today's UI) and saving persists the
         // edit into the active profile, so a reload preserves it.
-        let path = scratch_dir("radiomirror").join("settings.json");
+        let path = std::env::temp_dir()
+            .join("tempo_settings_radiomirror")
+            .join("settings.json");
         let mut s = Settings::default();
         s.ensure_radio_profiles();
         s.rig_model = 3081;

@@ -16,8 +16,6 @@ import {
   exportSettingsBundle,
   getDataFolder,
   setDataFolder,
-  pickDataFolder,
-  isTauri,
   fdDiscoverEvents,
   fdScoreboardStatus,
   connectWebStatus,
@@ -172,7 +170,7 @@ import { SettingsSearch } from './SettingsSearch'
 import { resolveTarget } from '../settings/registry'
 // The SSTV default-mode picker's rows. A pure module — importing them from SstvView would drag
 // the cockpit's canvas/waterfall/api surface into every SettingsPanel test's `../api` mock.
-import { FSK_ID_SECONDS_LABEL, SSTV_TX_MODES, TX_MODE_GROUPS } from '../sstvModes'
+import { SSTV_TX_MODES, TX_MODE_GROUPS } from '../sstvModes'
 // The APRS channel list and the grid→channel derivation, shared with the APRS cockpit so the
 // picker's options and the derived default can never name different numbers.
 import { APRS_FREQS, BEACON_SYMBOLS, NORTH_AMERICA, aprsChannelForGrid } from '../aprsBeacon'
@@ -760,7 +758,6 @@ const CLUSTER_PRESETS: { label: string; host: string }[] = [
   { label: 'VE7CC-1 — human SSB/CW, clean (recommended)', host: 've7cc.net:23' },
   { label: 'WA9PIE-2 — port 8000 (use if port 23 is blocked)', host: 'dxc.wa9pie.net:8000' },
   { label: 'W1NR — DXSpider, phone-rich', host: 'dx.w1nr.net:23' },
-  { label: 'AE5E — CC Cluster, port 7300 (use if port 23 is blocked)', host: 'dxspots.com:7300' },
   { label: 'W3LPL — firehose (skimmer-heavy)', host: 'w3lpl.net:7373' },
 ]
 
@@ -1038,16 +1035,6 @@ export function SettingsPanel({
       )
       setDataFolderInfo(await getDataFolder())
     }, t('settings.dataFolder.failed'))
-  }
-  // Browse fills the field in; it does not adopt anything. Typing or pasting a path stays the
-  // other way in and is not a fallback — a UNC or a network share an OS picker will not reach
-  // is exactly the case the field is there for.
-  const browseDataFolder = async () => {
-    await withErrorToast(async () => {
-      const picked = await pickDataFolder()
-      // Cancel is a null, not an error: leave whatever was typed exactly as it was.
-      if (picked) setDataFolderPath(picked)
-    }, t('settings.dataFolder.browse.failed'))
   }
   useEffect(()=>{
     if(!remote)return
@@ -1583,18 +1570,6 @@ export function SettingsPanel({
     )
   }
   const capPct = (v: number | null | undefined): string => (v == null ? '' : String(Math.round(v * 100)))
-
-  // The high-SWR cutoff's threshold. NOT nullable — blank means "the operator is mid-edit",
-  // not "no cutoff", and the switch beside it is what turns the feature off. So a blank or a
-  // junk entry KEEPS the previous value rather than storing 0, which would be a cutoff that
-  // fires on the first reading of every transmission. (Rust clamps again on read; this is the
-  // near guard, not the only one.)
-  const updateSwrThreshold = (raw: string) => {
-    markDirty()
-    const n = Number(raw.trim())
-    if (raw.trim() === '' || !Number.isFinite(n)) return
-    setForm((prev) => (prev ? { ...prev, swrStopThreshold: Math.min(99, Math.max(1, n)) } : prev))
-  }
 
   // SSTV drive, stored as a PERCENT (unlike the caps above, which are 0–1 fractions) because
   // the control it seeds is a percent slider. Blank = null = never touch the rig's power, which
@@ -3201,30 +3176,15 @@ export function SettingsPanel({
               </div>
               <div className="settings-field">
                 <span className="settings-label">{t('settings.dataFolder.path.label')}</span>
-                <div className="settings-input-row">
-                  <input
-                    className="settings-input"
-                    value={dataFolderPath}
-                    onChange={(e) => setDataFolderPath(e.target.value)}
-                    placeholder={dataFolder?.default ?? ''}
-                    aria-label={t('settings.dataFolder.path.label')}
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                  {/* Desktop only: the picker is an OS dialog, so there is nothing to open in a
-                      browser. Hidden rather than disabled — a dead button reads as a fault, and
-                      the field beside it still takes a typed path. */}
-                  {isTauri() && (
-                    <button
-                      type="button"
-                      className="settings-linkbtn"
-                      onClick={() => void browseDataFolder()}
-                      title={t('settings.dataFolder.browse.title')}
-                    >
-                      {t('settings.dataFolder.browse')}
-                    </button>
-                  )}
-                </div>
+                <input
+                  className="settings-input"
+                  value={dataFolderPath}
+                  onChange={(e) => setDataFolderPath(e.target.value)}
+                  placeholder={dataFolder?.default ?? ''}
+                  aria-label={t('settings.dataFolder.path.label')}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
                 <div className="rig-share-row">
                   <button
                     type="button"
@@ -4556,6 +4516,7 @@ export function SettingsPanel({
                 >
                   <option value="serial">{t('settings.rigControl.conn.serial')}</option>
                   <option value="network">{t('settings.rigControl.conn.network')}</option>
+                  <option value="sdrconnect">{t('settings.rigControl.conn.sdrconnect')}</option>
                   {/* Offered on every platform and DISABLED off Windows, rather than hidden:
                       OmniRig is named in the docs and in half the Windows logging ecosystem, so
                       a mac/Linux operator who goes looking for it must find the answer here
@@ -4667,11 +4628,30 @@ export function SettingsPanel({
                 </label>
               )}
 
+              {form.rigConn === 'sdrconnect' && (
+                <label className="settings-field">
+                  <span className="settings-label">{t('settings.rigControl.sdrconnect.address.label')}</span>
+                  <input disabled={remote}
+                    className="settings-input"
+                    type="text"
+                    value={form.rigAddr}
+                    placeholder="ws://192.168.1.50:5454"
+                    onChange={(e) => update('rigAddr', e.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <span className="settings-hint">
+                    {t('settings.rigControl.sdrconnect.address.hint')}
+                  </span>
+                </label>
+              )}
+
               {/* Serial Port + Baud belong to whoever OPENS the port. With Network that is
                   rigctld over TCP; with OmniRig it is OmniRig itself, which owns the rig type,
                   the port and the baud — so asking for them here would be asking the operator
-                  to configure the same radio twice and get it wrong once. */}
-              {form.rigConn !== 'network' && form.rigConn !== 'omnirig' && (
+                  to configure the same radio twice and get it wrong once. SDRconnect is the
+                  same shape a third way: the WebSocket address above IS the connection. */}
+              {form.rigConn !== 'network' && form.rigConn !== 'omnirig' && form.rigConn !== 'sdrconnect' && (
                 <>
               <label className="settings-field">
                 <span className="settings-label">{t('settings.rigControl.serialPort.label')}</span>
@@ -4899,6 +4879,8 @@ export function SettingsPanel({
                         'Not available on a network connection: the CI-V engine speaks to the radio over its serial port, and a LAN-connected radio has none for Nexus to open. Connect this radio by USB to use it.'
                       ) : civBlocked === 'omnirig' ? (
                         'Not available through OmniRig: OmniRig holds the COM port, so Nexus cannot open it to speak CI-V.'
+                      ) : civBlocked === 'sdrconnect' ? (
+                        'Not available through SDRconnect: the radio is driven over its WebSocket API, never through a serial CI-V port Nexus could open.'
                       ) : (
                         <T k="settings.rigControl.icomNative.hint" tags={{ b: <strong /> }} />
                       )}
@@ -6054,47 +6036,6 @@ export function SettingsPanel({
                 ))}
               </div>
               <span className="settings-hint">{t('settings.transmit.powerCaps.hint')}</span>
-            </div>
-
-            {/* The high-SWR cutoff. Off by default, and DISABLED outright on a radio whose SWR
-                scale Nexus cannot stand behind — `radio.swrScaleVerified` comes from the
-                engine (native Icom CI-V, or a Flex's own VITA meters), and #292 is why: a
-                Xiegu reads 1.2:1 on its own meter and reports 6:1 here, so a cutoff there
-                would unkey that operator's transmitter on every over. Absent `radio` (the
-                setup wizard, the Remote projection) reads as unverified, which is the safe
-                direction for a control that stops transmissions. The engine refuses it
-                independently — this is the explanation, not the guard. */}
-            <div className="settings-field">
-              <label className="settings-toggle">
-                <span className="settings-label">{t('settings.transmit.swrStop.label')}</span>
-                <button disabled={remote || !radio?.swrScaleVerified}
-                  type="button"
-                  role="switch"
-                  aria-checked={form.swrStopEnabled === true}
-                  className={`toggle${form.swrStopEnabled === true ? ' on' : ''}`}
-                  onClick={() => updateBool('swrStopEnabled', form.swrStopEnabled !== true)}
-                >
-                  <span className="toggle-knob" />
-                </button>
-              </label>
-              <label className="settings-power-cap">
-                <span>{t('settings.transmit.swrStop.threshold')}</span>
-                <input disabled={remote || !radio?.swrScaleVerified || form.swrStopEnabled !== true}
-                  type="number"
-                  min={1}
-                  max={99}
-                  step={0.1}
-                  inputMode="decimal"
-                  value={form.swrStopThreshold ?? 2.5}
-                  onChange={(e) => updateSwrThreshold(e.target.value)}
-                />
-                <span className="settings-power-cap-unit">:1</span>
-              </label>
-              <span className="settings-hint">
-                {radio?.swrScaleVerified
-                  ? t('settings.transmit.swrStop.hint')
-                  : t('settings.transmit.swrStop.unverified')}
-              </span>
             </div>
 
             <p className="settings-note">
@@ -7905,30 +7846,6 @@ export function SettingsPanel({
                 </span>
                 <span className="settings-hint">{t('settings.sstv.txPower.hint')}</span>
               </label>
-              {/* The FSK callsign burst. A TRANSMIT-PATH control, and it ships OFF: it
-                  adds about a second of key-down to every picture, which an operator
-                  running a long mode near their TX watchdog has a right not to be given
-                  by an upgrade. It does not replace the callsign burned into the
-                  picture — that is what the note below this group is about — it rides
-                  alongside it, for the stations whose software reads the trailer. */}
-              <div className="settings-field">
-                <label className="settings-toggle">
-                  <span className="settings-label">{t('settings.sstv.fskId.label')}</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    disabled={remote || locked('sstvTxFskId')}
-                    aria-checked={form.sstvTxFskId === true}
-                    className={`toggle${form.sstvTxFskId === true ? ' on' : ''}`}
-                    onClick={() => updateBool('sstvTxFskId', form.sstvTxFskId !== true)}
-                  >
-                    <span className="toggle-knob" />
-                  </button>
-                </label>
-                <span className="settings-hint">
-                  {t('settings.sstv.fskId.hint', { seconds: FSK_ID_SECONDS_LABEL })}
-                </span>
-              </div>
             </div>
             {/* Not a control — the answer to the question this section otherwise invites. The
                 plate is drawn in Rust before encoding so no webview path can bypass it, and its
